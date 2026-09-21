@@ -50,6 +50,26 @@
     </div>
 
     <div class="hud-corner br">
+      <div class="panel tyres" id="tyres" hidden>
+        <div class="tyre-head">
+          <span class="tyre-badge" id="tyre-badge">M</span>
+          <span class="k">TYRES</span>
+          <span class="v sm" id="tyre-life">100%</span>
+        </div>
+        <span class="tyre-track"><span class="tyre-fill" id="tyre-fill"></span></span>
+        <div class="pit-row" id="pit-row" hidden>
+          <span class="pit-state" id="pit-state">PIT</span>
+          <span class="pit-picks">
+            <button class="pick" type="button" data-tyre="soft">S</button>
+            <button class="pick" type="button" data-tyre="medium">M</button>
+            <button class="pick" type="button" data-tyre="hard">H</button>
+            <button class="pick call" type="button" id="pit-call">BOX</button>
+          </span>
+        </div>
+        <button class="pit-btn" id="pit-assist" type="button">
+          <span class="cone">&#9650;</span> ENTER PIT LANE <kbd class="boost-key">P</kbd>
+        </button>
+      </div>
       <div class="gauge">
         <svg viewBox="0 0 240 164" id="gauge-svg" aria-hidden="true">
           <path class="gauge-track" d="M38 132 A 82 82 0 0 1 202 132" />
@@ -96,6 +116,7 @@
         <button class="mini" id="pedal-hand" aria-label="Handbrake">HAND</button>
         <button class="mini boost" id="pedal-boost" aria-label="Boost">BOOST</button>
       </div>
+      <button class="mini pit" id="touch-pit" aria-label="Enter the pit lane">PIT</button>
       <button class="pedal brake" id="pedal-brake" aria-label="Brake">BRAKE</button>
       <button class="pedal gas" id="pedal-gas" aria-label="Throttle">GAS</button>
     </div>
@@ -292,7 +313,9 @@
           <input type="range" id="set-steering" min="50" max="150" value="100" />
         </label>
         <p class="hint tight">Keys: WASD drive, Shift boost, Space handbrake,
-          C camera, V vision, B weather, M sound, R respawn, Esc menu.</p>
+          C camera, V vision, B weather, M sound, R respawn, Esc menu.
+          Tyres: 1 soft, 2 medium, 3 hard, T call a pit stop,
+          P hand the car to the pit lane.</p>
       </section>
     </div>
   </div>

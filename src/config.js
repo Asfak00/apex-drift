@@ -25,17 +25,24 @@ export const CAR = {
   minSteer: 0.012,         // never less than this, however fast
   // How far past the grip limit full lock is allowed to ask. Above 1 the
   // driver can still provoke a slide; at 1 the car would only ever understeer.
-  steerOverrun: 1.4,
-  steerRate: 4.6,          // rad/s the wheel itself can travel
-  steerReturn: 6.2,        // rad/s the wheel self-centres when released
+  // Kept close to 1: at 1.4 the tyre curve was already falling away by the time
+  // the input reached the stop, so holding full lock turned *less* sharply than
+  // holding three quarters of it. Full input must be the strongest input.
+  steerOverrun: 1.08,
+  // The input is not the wheel angle. Raised to a power, a small movement asks
+  // for a small share of the grip instead of most of it, which is what gives
+  // the wheel a usable range at speed rather than everything in the first third.
+  steerCurve: 1.35,
+  steerRate: 6.8,          // rad/s the wheel itself can travel
+  steerReturn: 8.0,        // rad/s the wheel self-centres when released
 
   // Lateral tyre curve: force = -muN * sin(C * atan(B * slipAngle)).
   // Peak grip lands near 0.22 rad of slip, then falls away into a slide.
-  gripLat: 18.4,           // mechanical grip: peak lateral acceleration, m/s^2
+  gripLat: 22.4,           // mechanical grip: peak lateral acceleration, m/s^2
   // Aerodynamic grip, in m/s^2 per (m/s)^2 of speed. Downforce rises with the
   // square of speed, so a fast car corners harder the faster it goes: this is
   // what stops the turning circle growing without limit at the top end.
-  downforce: 0.0076,
+  downforce: 0.0128,
   // Stiffer tyres: more force for a small slip angle, so the car answers the
   // wheel instead of leaning on it.
   tyreB: 12.5,
@@ -84,26 +91,43 @@ export const VISIONS = {
 };
 
 // Weather changes grip, visibility and particle field. Stacks on top of any vision.
+// `grip` is what the road gives back, not what the car can use: how much of it
+// reaches the tarmac is the tyres' business, and a driving axle that is already
+// spending its grip on power has none of it left for the corner.
 export const WEATHERS = {
   clear: { name:'Clear', grip:1.00, particle:null, count:0,
            fogScale:1.00, lightScale:1.00, wet:0.0, wind:0.0, lightning:false },
-  rain:  { name:'Rain',  grip:0.78, particle:'rain', count:9000,
+  rain:  { name:'Rain',  grip:0.89, particle:'rain', count:9000,
            fogScale:0.55, lightScale:0.62, wet:0.85, wind:0.22, lightning:false },
-  storm: { name:'Storm', grip:0.66, particle:'rain', count:14000,
+  storm: { name:'Storm', grip:0.80, particle:'rain', count:14000,
            fogScale:0.36, lightScale:0.40, wet:1.0, wind:0.55, lightning:true },
-  fog:   { name:'Fog',   grip:0.90, particle:null, count:0,
+  fog:   { name:'Fog',   grip:0.95, particle:null, count:0,
            fogScale:0.20, lightScale:0.72, wet:0.25, wind:0.05, lightning:false },
-  snow:  { name:'Snow',  grip:0.55, particle:'snow', count:7000,
+  snow:  { name:'Snow',  grip:0.73, particle:'snow', count:7000,
            fogScale:0.42, lightScale:0.85, wet:0.35, wind:0.30, lightning:false },
 };
 
 export const MODES = {
-  race:  { name:'Race',      laps:3, rivals:3,
+  race:  { name:'Race',      laps:3, rivals:3, tyres:true, tyre:'soft',
            hint:'Three laps, three rivals. Position is scored on laps then checkpoint order.' },
-  trial: { name:'Time Trial',laps:3, rivals:0,
+  gp:    { name:'Grand Prix',laps:54, rivals:5, tyres:true, tyre:'medium', pit:true,
+           hint:'Fifty-four laps. One set of tyres will not last: watch the wear and take the pit lane.' },
+  trial: { name:'Time Trial',laps:3, rivals:0, tyres:false,
            hint:'Empty circuit. Chase your own best lap, nothing else on track.' },
-  roam:  { name:'Free Roam', laps:0, rivals:2,
+  roam:  { name:'Free Roam', laps:0, rivals:2, tyres:false,
            hint:'No flag, no clock. Learn the circuit and swap skies and weather at will.' },
+};
+
+// The pit lane runs alongside the start/finish straight, outside the barrier
+// line, and every circuit gets one in the same place relative to its own loop.
+export const PIT = {
+  entry: 0.885,        // t where the lane peels off
+  exit: 0.075,         // t where it rejoins
+  box: 0.985,          // t of the working box
+  half: 4.6,           // half-width of the lane surface
+  gap: 5.4,            // lane centre, measured out from the road edge
+  limit: 22,           // m/s (~80 km/h) speed limit in the lane
+  service: 2.6,        // seconds stationary in the box to change a set
 };
 
 export const CAMERAS = ['chase', 'hood', 'cinematic'];
@@ -179,6 +203,7 @@ export const CHASSIS = {
 export const TRACKS = {
   apex: {
     name: 'Apex Ring',
+    crowd: 0.55, stands: [[0.80, 0.22]],
     blurb: 'The home circuit. Wide asphalt, one long straight, a hairpin and a banked sweeper.',
     surface: 'asphalt', roadHalf: 14.5, grip: 1.0, barriers: 'armco', music: 'circuit', bank: [3.4, 1.6],
     road: 0x2b2f38, ground: 0x4a6b48, hills: 0x3c5740, kerbs: true,
@@ -193,6 +218,7 @@ export const TRACKS = {
   },
   canyon: {
     name: 'Canyon Run',
+    crowd: 0.12,
     blurb: 'Narrow concrete ledge cut through rock. Tight, fast, and there is nowhere to put a mistake.',
     surface: 'concrete', roadHalf: 11.5, grip: 0.95, barriers: 'concrete', music: 'desert', bank: [6.2, 2.8],
     road: 0x4a4e55, ground: 0x6b5340, hills: 0x7a5c44, kerbs: false,
@@ -204,6 +230,7 @@ export const TRACKS = {
   },
   dust: {
     name: 'Dust Bowl',
+    crowd: 0.16,
     blurb: 'Loose dirt, wide and flowing. Everything slides, so carry the slide instead of fighting it.',
     surface: 'dirt', roadHalf: 17.0, grip: 0.72, barriers: 'none', music: 'desert', bank: [2.0, 1.1],
     road: 0x6b5233, ground: 0x8a7248, hills: 0x9a7f52, kerbs: false,
@@ -215,6 +242,7 @@ export const TRACKS = {
   },
   town: {
     name: 'Old Town',
+    crowd: 0.40,
     blurb: 'City streets. Long straights, square junctions, and 90-degree corners you have to brake for.',
     surface: 'asphalt', roadHalf: 11.0, grip: 0.97, barriers: 'pillars', music: 'street', bank: [0, 0], scenery: 'town',
     road: 0x33373f, ground: 0x4c5158, hills: 0x3d434c, kerbs: false,
@@ -230,6 +258,7 @@ export const TRACKS = {
   },
   village: {
     name: 'Green Lane',
+    crowd: 0.20,
     blurb: 'A country lane through farmland. Wide open, softer bends, and a long run between the hedges.',
     surface: 'asphalt', roadHalf: 9.0, grip: 0.93, barriers: 'fence', music: 'rural', bank: [1.6, 0.9], scenery: 'village',
     road: 0x3a3a36, ground: 0x5f7a44, hills: 0x4d6638, kerbs: false,
@@ -244,6 +273,7 @@ export const TRACKS = {
   },
   dock: {
     name: 'Dock Quarter',
+    crowd: 0.35,
     blurb: 'Twelve corners and barely a straight. Left, right, left again — the circuit never lets you settle.',
     surface: 'asphalt', roadHalf: 10.5, grip: 0.96, bank: [0, 0], scenery: 'town',
     barriers: 'concrete', music: 'street',
@@ -265,8 +295,24 @@ export const TRACKS = {
       ['straight', 76], ['right', 90, 22],
     ],
   },
+  stadium: {
+    name: 'Grand Stadium',
+    blurb: 'A closed arena ringed by tiered galleries. Thirty thousand people, floodlights, and a roar you can feel through the wheel.',
+    surface: 'asphalt', roadHalf: 13.5, grip: 1.0, barriers: 'concrete', music: 'circuit',
+    bank: [2.2, 1.0], scenery: 'stadium', crowd: 1,
+    road: 0x2a2e36, ground: 0x3a4a3c, hills: 0x333b44, kerbs: true,
+    // Galleries run the whole way round, so the stands cover the entire loop.
+    stands: [[0.0, 1.0]],
+    points: [
+      [0, -230], [118, -222], [196, -172], [224, -96], [212, -14],
+      [232, 62], [188, 132], [110, 168], [24, 158], [-52, 182],
+      [-108, 238], [-186, 240], [-248, 190], [-258, 112], [-222, 44],
+      [-244, -34], [-246, -116], [-200, -186], [-118, -222],
+    ],
+  },
   night: {
     name: 'Harbour Mile',
+    crowd: 0.45, stands: [[0.86, 0.14]],
     blurb: 'A short street loop of long straights and square corners. Heavy braking, hard on tyres.',
     surface: 'asphalt', roadHalf: 13.0, grip: 0.98, barriers: 'concrete', music: 'street', bank: [0.8, 0.4],
     road: 0x24272e, ground: 0x2f3742, hills: 0x39424f, kerbs: true,

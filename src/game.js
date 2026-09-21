@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import {
-  MODES, VISIONS, WEATHERS, CAMERAS, CHASSIS, TRACKS, PHYSICS_STEP, MAX_STEPS, BOOST, CAR,
+  MODES, VISIONS, WEATHERS, CAMERAS, CHASSIS, TRACKS, PHYSICS_STEP, MAX_STEPS, BOOST, CAR, PIT,
 } from './config.js';
+import { COMPOUNDS, COMPOUND_KEYS } from './tyres.js';
 import { Track } from './track.js';
 import { Car, RemoteCar, makeRivals } from './car.js';
 import { Environment } from './environment.js';
@@ -11,6 +12,7 @@ import { Audio } from './audio.js';
 import { Effects } from './effects.js';
 import { TouchControls, isTouchDevice } from './touch.js';
 import { Wallet } from './wallet.js';
+import { PitCrew } from './pit-crew.js';
 
 const VISION_KEYS = Object.keys(VISIONS);
 const WEATHER_KEYS = Object.keys(WEATHERS);
@@ -45,8 +47,11 @@ export class Game {
     this.audio = new Audio();
     this.touch = new TouchControls(this.input);
     this.#bindBoostButton();
+    this.#bindPitButtons();
     this.effects = new Effects(this.scene);
     this.effects.setSurface(this.track.spec);
+    this.crew = new PitCrew(this.track);
+    this.scene.add(this.crew.group);
     this.shake = 0;
     this.wasBoosting = false;
     this.wallet = new Wallet();
@@ -105,9 +110,79 @@ export class Game {
         this.hud.toast('RESPAWN', 0.8, '#ffc94d');
       }
     });
+    for (const key of COMPOUND_KEYS) {
+      this.input.on(`tyre-${key}`, () => this.chooseCompound(key));
+    }
+    this.input.on('pit', () => this.togglePit());
+    this.input.on('pit-assist', () => this.toggleAssist());
     this.input.on('menu', () => {
       if (this.state === 'racing' || this.state === 'countdown') this.stop(), this.onExit();
     });
+  }
+
+  // Which set the crew will fit at the next stop. Choosing one while a stop is
+  // already called changes the call rather than making a second one.
+  chooseCompound(key) {
+    if (!COMPOUNDS[key]) return;
+    this.nextCompound = key;
+    // The choice stands whether or not a stop was ever called: it is what the
+    // crew fits the moment the car pulls up on the box.
+    this.player.pitChoice = key;
+    if (this.player.pitState.want) this.player.requestPit(key);
+    this.hud.toast(`${COMPOUNDS[key].name.toUpperCase()} SELECTED`, 1,
+      `#${COMPOUNDS[key].color.toString(16).padStart(6, '0')}`);
+  }
+
+  // Call a stop, or wave it off. The car takes it when it reaches the box.
+  // The crew work on whichever car is actually on the box, and are on screen
+  // only while there is a car in the lane to work on.
+  #updateCrew(dt) {
+    const inLane = this.simulated.some((car) => car.pitState.inLane)
+      || this.track.pitPhase(this.track.project(this.player.position, this.player.hintIndex).t)
+        !== null;
+    this.crew.setActive(inLane);
+    if (!inLane && !this.crew.lastCar) return;
+
+    const onBox = this.simulated.find((car) => car.pitState.serving > 0)
+      ?? (this.crew.lastCar?.pitState.serving > 0 ? this.crew.lastCar : null);
+    const progress = onBox ? Math.min(1, onBox.pitState.serving / PIT.service) : 0;
+    this.crew.update(dt, onBox, progress);
+    if (onBox) onBox.pitLift = this.crew.jackLift;
+  }
+
+  // Hand the car to the lane. Engaged from the pit entry, it drives the same
+  // line the AI drives — down at the limit, stopped on the box — and gives the
+  // car back the moment the stop is done or the driver touches the controls.
+  toggleAssist() {
+    if (!this.mode?.tyres) {
+      this.hud.toast('NO TYRE WEAR IN THIS MODE', 1.2, '#7d8ba3');
+      return;
+    }
+    this.assist = !this.assist;
+    if (this.assist) {
+      if (!this.player.pitState.want) this.player.requestPit(this.nextCompound ?? 'medium');
+      this.hud.toast('PIT ASSIST ON', 1.4, '#4de3b0');
+    } else {
+      this.hud.toast('PIT ASSIST OFF', 1.1, '#7d8ba3');
+    }
+  }
+
+  // Calling a stop is an announcement, not a permission: the lane is open for
+  // as long as the tyres wear, and stopping on the box is always enough.
+  togglePit() {
+    if (!this.mode?.tyres) {
+      this.hud.toast('NO TYRE WEAR IN THIS MODE', 1.2, '#7d8ba3');
+      return;
+    }
+    const want = this.player.pitState.want;
+    if (want) {
+      this.player.cancelPit();
+      this.hud.toast('PIT CALL CANCELLED', 1.1, '#7d8ba3');
+    } else {
+      const key = this.nextCompound ?? 'medium';
+      this.player.requestPit(key);
+      this.hud.toast(`BOX ANY LAP · ${COMPOUNDS[key].name.toUpperCase()}`, 1.6, '#ffc94d');
+    }
   }
 
   // Swapping a circuit replaces the geometry every other system reads from, so
@@ -121,6 +196,7 @@ export class Game {
     this.env.setTrack(this.track);
     this.hud.setTrack(this.track);
     this.effects.setSurface(this.track.spec);
+    this.crew.setTrack(this.track);
     for (const car of this.simulated) car.track = this.track;
   }
 
@@ -212,6 +288,28 @@ export class Game {
     for (const type of ['pointerup', 'pointercancel', 'pointerleave']) {
       button.addEventListener(type, () => set(false));
     }
+  }
+
+  // The same two decisions the keys make, on screen for anyone without them.
+  #bindPitButtons() {
+    for (const button of document.querySelectorAll('.pick[data-tyre]')) {
+      button.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.chooseCompound(button.dataset.tyre);
+      });
+    }
+    document.getElementById('pit-call')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      this.togglePit();
+    });
+    // One control for the whole stop: call it, drive in, get served, drive out.
+    for (const id of ['pit-assist', 'touch-pit']) {
+      document.getElementById(id)?.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.toggleAssist();
+      });
+    }
+    this.assistButton = document.getElementById('pit-assist');
   }
 
   #bindResize() {
@@ -343,7 +441,19 @@ export class Game {
       car.finished = false;
       car.crossedLine = false;
       car.lapStart = 0;
+      // Tyres are part of the race, not part of the car: the mode decides
+      // whether they wear, whether there is a lane to change them in, and what
+      // everyone starts on.
+      car.wearing = !!this.mode.tyres;
+      car.pitAllowed = !!this.mode.pit;
+      car.lapsLeft = this.mode.laps ?? 0;
+      car.cancelPit();
+      car.pitState.stops = 0;
+      car.pitChoice = this.mode.tyre ?? 'medium';
+      car.setCompound(car.ai ? this.#rivalStart(car) : (this.mode.tyre ?? 'medium'));
     });
+    this.nextCompound = this.mode.tyre ?? 'medium';
+    this.assist = false;
 
     this.#applyEnv();
     this.#applyAudioProfile();
@@ -371,12 +481,21 @@ export class Game {
     if (!this.running) { this.running = true; requestAnimationFrame(this.loop); }
   }
 
+  // A field that all starts on the same rubber has no strategy in it. Long
+  // races spread the grid across the compounds; short ones all go soft.
+  #rivalStart(car) {
+    if ((this.mode.laps ?? 0) < 8) return 'soft';
+    const order = ['medium', 'hard', 'soft', 'medium', 'hard'];
+    return order[this.rivals.indexOf(car) % order.length];
+  }
+
   stop() {
     this.state = 'idle';
     this.multiplayer = false;
     this.hud.show(false);
     this.touch.show(false);
     this.audio.silenceEngine();
+    this.audio.silenceCrowd();
     this.audio.duckMusic(1);
     this.hud.show(false);
     this.input.clear();
@@ -385,6 +504,24 @@ export class Game {
   // Standings sort on laps completed plus fraction of the current lap.
   standings() {
     return [...this.cars].sort((a, b) => b.progress - a.progress);
+  }
+
+  // Everything the crowd reacts to goes through here: a swell over the bed and
+  // a lift in what the figures in the stands are doing.
+  #roar(strength) {
+    this.cheer = Math.min(1, Math.max(this.cheer ?? 0, strength));
+    this.audio.cheer(strength * (this.track.spec.crowd ?? 0.25));
+  }
+
+  #pitServed(car) {
+    const label = `${car.tyres.name} tyres`;
+    if (car === this.player) {
+      this.hud.toast(label.toUpperCase(), 1.6,
+        `#${car.tyres.color.toString(16).padStart(6, '0')}`);
+      this.#roar(0.7);
+    } else {
+      this.hud.note(`${car.name} → ${label}`, car.color);
+    }
   }
 
   #lapCrossed(car) {
@@ -396,6 +533,8 @@ export class Game {
     // now or the car that just took the flag sorts below the whole field.
     car.progress = car.lap + (car.progress % 1);
     car.lastLapTime = lapTime;
+    if (this.mode.laps) car.lapsLeft = Math.max(0, this.mode.laps - car.lap);
+    if (car === this.player) this.#roar(0.55);
     if (car.bestLapTime == null || lapTime < car.bestLapTime) {
       car.bestLapTime = lapTime;
       if (car === this.player) this.hud.toast(`BEST ${formatTime(lapTime)}`, 1.6, '#4de3b0');
@@ -423,6 +562,7 @@ export class Game {
     const order = this.standings();
     const place = order.indexOf(this.player) + 1;
     this.hud.toast('FINISH', 2.2, '#ffc94d');
+    this.#roar(1);
     if (this.multiplayer) {
       // The server ranks the field once everyone is in; main.js renders that.
       this.lastPayout = this.wallet.award({
@@ -554,8 +694,12 @@ export class Game {
       if (!crossed || Math.abs(across) > 9 || closing < 4) continue;
       const strength = Math.min(1, closing / 26);
       this.audio.passBy(strength, Math.sign(across) || 1);
-      // Going past someone who was ahead of you is an overtake worth points.
-      if (previous > 0 && along < 0) this.overtakes += 1;
+      // Going past someone who was ahead of you is an overtake worth points,
+      // and the one thing a grandstand always reacts to.
+      if (previous > 0 && along < 0) {
+        this.overtakes += 1;
+        this.#roar(0.9);
+      }
     }
   }
 
@@ -687,16 +831,35 @@ export class Game {
       if (car.ai) {
         if (live) car.driveAI(dt, this.clock); else car.input = held(car);
       } else {
-        car.input = live ? this.input.sample() : held(car);
+        const driver = live ? this.input.sample(dt) : held(car);
+        car.input = live && this.assist ? this.#assistInput(car, driver) : driver;
       }
-      car.update(dt, grip);
+      car.update(dt, grip, this.env.weather.wet);
       if (this.state === 'countdown') {
         car.velocity.set(0, 0, 0);
         car.speed = 0;
       }
+      if (car.consumePitFlag()) this.#pitServed(car);
       if (car.consumeLapFlag() && this.state !== 'countdown') this.#lapCrossed(car);
     }
     this.#resolveContacts();
+  }
+
+  // The assist only has the car while it is in the pit lane's stretch of the
+  // circuit and the driver is not fighting it. Any real input hands it back.
+  #assistInput(car, driver) {
+    if (driver.throttle > 0.05 || driver.brake > 0.05 || Math.abs(driver.steer) > 0.1) {
+      this.assist = false;
+      this.hud.toast('PIT ASSIST OFF', 1, '#7d8ba3');
+      return driver;
+    }
+    const p = this.track.project(car.position, car.hintIndex);
+    if (this.track.pitPhase(p.t) === null) return driver;
+    if (car.pitState.done) {
+      this.assist = false;
+      return driver;
+    }
+    return car.pitLaneInput(p, this.track.length);
   }
 
   // A boost costs a charge on the press, not per second. Holding it down runs
@@ -744,6 +907,7 @@ export class Game {
 
     if (this.state === 'preview') {
       this.#orbitPreview(frame);
+      this.track.update(frame, 0.3);
       this.env.update(frame, this.camera, performance.now() / 1000);
       this.effects.update(frame);
       this.renderer.render(this.scene, this.camera);
@@ -777,6 +941,14 @@ export class Game {
 
     this.effects.tyreSmoke(this.player, frame);
     this.effects.update(frame);
+    this.#updateCrew(frame);
+    // The crowd hums along with the pace of the race and swells when something
+    // happens; both the figures and the sound read from the same number.
+    this.cheer = Math.max(0, (this.cheer ?? 0) - frame * 0.42);
+    const draw = this.track.spec.crowd ?? 0.25;
+    const excite = Math.min(1, 0.18 + this.player.kmh / 460 + this.cheer);
+    this.track.update(frame, excite);
+    this.audio.crowd(draw, excite, frame);
     this.#updateSound(frame);
     this.env.update(frame, this.camera, this.clock);
     this.#updateCamera(frame);
@@ -795,8 +967,24 @@ export class Game {
       env: this.env,
       surface: this.track.spec,
       wallet: this.wallet,
+      tyres: this.mode.tyres ? this.player.tyres : null,
+      pit: this.mode.tyres
+        ? {
+          lane: this.player.inPitLane,
+          called: this.player.pitState.want,
+          serving: this.player.pitProgress,
+          stops: this.player.pitState.stops,
+          next: this.nextCompound,
+          speeding: this.player.inPitLane && this.player.kmh > PIT.limit * 3.6 + 2,
+        }
+        : null,
     });
     if (this.boostButton) this.boostButton.disabled = !this.wallet.canBoost();
+    if (this.assistButton) {
+      this.assistButton.hidden = !this.mode.tyres;
+      this.assistButton.classList.toggle('on', !!this.assist);
+    }
+    document.getElementById('touch-pit')?.classList.toggle('held', !!this.assist);
 
     this.renderer.render(this.scene, this.camera);
   }

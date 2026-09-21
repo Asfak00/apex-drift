@@ -26,6 +26,10 @@ export class TouchControls {
 
   show(on) {
     this.root.hidden = !on;
+    // The HUD is laid out for a mouse until the on-screen controls appear: the
+    // dial and the pedals both want the bottom-right corner, and on a phone
+    // there is not room for both. One class moves the HUD out of their way.
+    document.body.classList.toggle('touch-ui', !!on);
     if (!on) this.reset();
   }
 
@@ -35,28 +39,56 @@ export class TouchControls {
     this.state.steer = 0;
     this.state.handbrake = false;
     this.state.boost = false;
-    if (this.knob) this.knob.style.transform = 'translateX(0px)';
+    this.#paint(0);
   }
 
-  // Steering is a drag: where the thumb is relative to where it landed decides
-  // the angle, so the wheel is wherever the thumb happens to be.
+  #paint(amount) {
+    if (this.knob) {
+      const travel = this.pad ? Math.max(46, this.pad.clientWidth * 0.34) : 46;
+      this.knob.style.transform =
+        `translateX(${-amount * travel}px) rotate(${-amount * 38}deg)`;
+    }
+    this.pad?.style.setProperty('--steer', String(amount));
+  }
+
+  // Steering is a drag, and a drag has to do three things a raw offset does
+  // not: ignore the wobble of a thumb that is only resting, give fine control
+  // near the centre and full lock at the edge, and let the driver wind lock
+  // back off without lifting. The origin follows the thumb once it is past
+  // full travel, so the wheel can always be turned back the other way.
   #bindSteer() {
     const pad = this.pad;
+    const DEAD = 0.07;
     let originX = 0;
     let pointer = null;
     const travel = () => Math.max(46, pad.clientWidth * 0.34);
 
+    const write = (amount) => {
+      this.state.steer = amount;
+      this.#paint(amount);
+    };
+
     const move = (e) => {
       if (e.pointerId !== pointer) return;
-      const offset = clamp(e.clientX - originX, -travel(), travel());
-      this.state.steer = -offset / travel();
-      this.knob.style.transform = `translateX(${offset}px)`;
+      const span = travel();
+      let offset = e.clientX - originX;
+      // Past full lock the origin comes with the thumb, so the next movement
+      // in the other direction unwinds the wheel immediately.
+      if (offset > span) originX = e.clientX - span;
+      else if (offset < -span) originX = e.clientX + span;
+      offset = clamp(e.clientX - originX, -span, span);
+
+      const raw = offset / span;
+      const size = Math.abs(raw);
+      // Dead zone first, then an expo curve: small angles stay small, and the
+      // last of the travel is where full lock lives.
+      const live = size < DEAD ? 0 : (size - DEAD) / (1 - DEAD);
+      write(-Math.sign(raw) * live * live * (3 - 2 * live));
     };
     const end = (e) => {
       if (e.pointerId !== pointer) return;
       pointer = null;
-      this.state.steer = 0;
-      this.knob.style.transform = 'translateX(0px)';
+      write(0);
       pad.classList.remove('active');
     };
 

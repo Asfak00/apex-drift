@@ -17,12 +17,16 @@ const isTyping = (target) => {
 };
 
 const ACTION_KEYS = {
+  Digit1: 'tyre-soft',
+  Digit2: 'tyre-medium',
+  Digit3: 'tyre-hard',
+  KeyT: 'pit',
+  KeyP: 'pit-assist',
   KeyC: 'camera',
   KeyV: 'vision',
   KeyB: 'weather',
   KeyR: 'respawn',
   Escape: 'menu',
-  KeyP: 'pause',
   KeyM: 'sound',
 };
 
@@ -35,6 +39,12 @@ export class Input {
     this.sensitivity = 1;
     // A stick gives a real amount of steering rather than all or nothing.
     this.padDeadzone = 0.12;
+    // A key is all or nothing, and a car's wheel is not. The key axis is ramped
+    // so tapping left is a correction and holding it still reaches full lock
+    // inside two tenths of a second.
+    this.keySteer = 0;
+    this.keyAttack = 5.5;    // per second, pressed
+    this.keyRelease = 9;     // per second, let go
 
     target.addEventListener('keydown', (e) => {
       if (isTyping(e.target)) return;
@@ -79,9 +89,12 @@ export class Input {
   }
 
   // Sampled straight into a car's input block each frame.
-  sample() {
+  sample(dt = 1 / 60) {
     const left = this.#any(AXIS_KEYS.left);
     const right = this.#any(AXIS_KEYS.right);
+    const want = (left ? 1 : 0) - (right ? 1 : 0);
+    const rate = (want === 0 ? this.keyRelease : this.keyAttack) * dt;
+    this.keySteer += Math.max(-rate, Math.min(rate, want - this.keySteer));
     const t = this.touch;
     const pad = this.#pad();
     // Stick and triggers read as fractions, so a small input is a small input.
@@ -95,7 +108,7 @@ export class Input {
       throttle: Math.max(this.#any(AXIS_KEYS.throttle) ? 1 : 0, t.throttle, padThrottle),
       brake: Math.max(this.#any(AXIS_KEYS.brake) ? 1 : 0, t.brake, padBrake),
       steer: Math.max(-1, Math.min(1,
-        ((left ? 1 : 0) - (right ? 1 : 0) + t.steer + padSteer) * this.sensitivity)),
+        (this.keySteer + t.steer + padSteer) * this.sensitivity)),
       handbrake: this.#any(AXIS_KEYS.handbrake) || t.handbrake || padHand,
       boost: this.#any(AXIS_KEYS.boost) || t.boost || padBoost,
     };
@@ -103,6 +116,7 @@ export class Input {
 
   clear() {
     this.down.clear();
+    this.keySteer = 0;
     this.touch.throttle = 0;
     this.touch.brake = 0;
     this.touch.steer = 0;

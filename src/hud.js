@@ -1,4 +1,5 @@
-import { PALETTE } from './config.js';
+import { PALETTE, PIT } from './config.js';
+import { COMPOUNDS } from './tyres.js';
 
 // Top of the dial. The needle, the arc and the scale all read from this one
 // number, so they can never disagree.
@@ -36,7 +37,14 @@ export class Hud {
       boost: document.getElementById('boost'),
       boostFill: document.getElementById('boost-fill'),
       boostCharges: document.getElementById('boost-charges'),
+      tyres: document.getElementById('tyres'),
+      tyreBadge: document.getElementById('tyre-badge'),
+      tyreLife: document.getElementById('tyre-life'),
+      tyreFill: document.getElementById('tyre-fill'),
+      pitRow: document.getElementById('pit-row'),
+      pitState: document.getElementById('pit-state'),
     };
+    this.picks = [...document.querySelectorAll('.pick[data-tyre]')];
 
     this.map = document.getElementById('minimap');
     this.ctx = this.map.getContext('2d');
@@ -177,6 +185,40 @@ export class Hud {
     el.classList.toggle('close', metres < 30);
   }
 
+  // What is on the car, how much of it is left, and what the pit wall is
+  // waiting for. One panel: a driver reads rubber and strategy together.
+  #writeTyres(tyres, pit) {
+    this.el.tyres.hidden = !tyres;
+    if (!tyres) return;
+    const life = Math.max(0, tyres.life);
+    const hex = `#${tyres.color.toString(16).padStart(6, '0')}`;
+    this.el.tyreBadge.textContent = tyres.key;
+    this.el.tyreBadge.style.background = hex;
+    this.el.tyreLife.textContent = `${Math.round(life * 100)}%`;
+    this.el.tyreFill.style.width = `${life * 100}%`;
+    this.el.tyreFill.style.background = life < 0.14 ? '#ff5f5f' : life < 0.32 ? '#ffc94d' : hex;
+    this.el.tyres.classList.toggle('worn', life < 0.32);
+    this.el.tyres.classList.toggle('shot', life < 0.14);
+
+    this.el.pitRow.hidden = !pit;
+    if (!pit) return;
+    const state = pit.serving > 0
+      ? `SERVICE ${Math.round(pit.serving * 100)}%`
+      : pit.speeding
+        ? `SLOW · ${Math.round(PIT.limit * 3.6)} KM/H`
+        : pit.lane
+          ? 'PIT LANE'
+          : pit.called
+            ? `BOX · ${COMPOUNDS[pit.called].name.toUpperCase()}`
+            : `STOPS ${pit.stops}`;
+    this.el.pitState.textContent = state;
+    this.el.pitState.classList.toggle('hot', !!pit.called || pit.serving > 0);
+    this.el.pitState.classList.toggle('bad', !!pit.speeding);
+    for (const b of this.picks) {
+      b.setAttribute('aria-pressed', String(b.dataset.tyre === pit.next));
+    }
+  }
+
   update(dt, state) {
     const { player, rivals, lapCount, position, entries, clock, env, surface } = state;
 
@@ -217,6 +259,8 @@ export class Hud {
     if (surface) this.el.track.textContent = surface.name;
     this.el.vision.textContent = env.vision.name;
     this.el.weather.textContent = env.weather.name;
+
+    this.#writeTyres(state.tyres, state.pit);
 
     // Who is in front, who is behind, and by how far.
     this.#writeGap(this.el.ahead, state.gaps?.ahead);

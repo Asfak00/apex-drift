@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { CAR, PALETTE, CHASSIS, BOOST } from './config.js';
+import { CAR, PALETTE, CHASSIS, BOOST, PIT } from './config.js';
+import { TyreSet } from './tyres.js';
 
 // A chassis only ever scales the shared baseline, so every variant stays on the
 // same handling model and no one of them needs its own physics path.
@@ -487,6 +488,15 @@ export function buildBody(color, body, chassis = null) {
   const archGeo = new THREE.CylinderGeometry(radius * 1.16, radius * 1.16, width * 1.02, 18, 1, true);
   archGeo.rotateZ(Math.PI / 2);
 
+  // A coloured sidewall band: which compound is on the car should be readable
+  // from the chase camera, not only from the HUD.
+  const wallGeo = new THREE.CylinderGeometry(radius * 0.88, radius * 0.88, width * 1.06, 20, 1, true);
+  wallGeo.rotateZ(Math.PI / 2);
+  const tyreMat = new THREE.MeshStandardMaterial({
+    color: 0xffc94d, emissive: 0xffc94d, emissiveIntensity: 0.55,
+    roughness: 0.7, side: THREE.DoubleSide,
+  });
+
   const rubber = new THREE.MeshStandardMaterial({ color: 0x0b0e13, roughness: 0.96 });
   const rimMat = new THREE.MeshStandardMaterial({
     color: 0xc2ccd8, metalness: 1, roughness: 0.18, envMapIntensity: 1.6,
@@ -506,7 +516,7 @@ export function buildBody(color, body, chassis = null) {
       const spin = new THREE.Group();
       const tyre = new THREE.Mesh(tyreGeo, rubber);
       tyre.castShadow = true;
-      spin.add(tyre, new THREE.Mesh(rimGeo, rimMat));
+      spin.add(tyre, new THREE.Mesh(rimGeo, rimMat), new THREE.Mesh(wallGeo, tyreMat));
       for (let k = 0; k < 5; k++) {
         const spoke = new THREE.Mesh(spokeGeo, rimMat);
         spoke.rotation.x = (k / 5) * Math.PI;
@@ -525,7 +535,7 @@ export function buildBody(color, body, chassis = null) {
     }
   }
 
-  return { group: g, wheels, headMat, tailMat };
+  return { group: g, wheels, headMat, tailMat, tyreMat };
 }
 
 export class Car {
@@ -547,6 +557,7 @@ export class Car {
     this.wheels = built.wheels;
     this.headMat = built.headMat;
     this.tailMat = built.tailMat;
+    this.tyreMat = built.tyreMat;
 
     this.position = new THREE.Vector3();
     this.velocity = new THREE.Vector3();
@@ -573,6 +584,24 @@ export class Car {
     this.input = { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: false };
     this.aiSkill = 1;
 
+    // Tyres are a consumable with a compound and a life. `wearing` is off in
+    // the modes that are about a single lap, so a time trial is never decided
+    // by rubber the driver cannot change.
+    this.tyres = new TyreSet('medium');
+    this.wearing = false;
+    // A pit stop is a state the car is in, not an event: requested, in the
+    // lane, being worked on, then back out.
+    this.pitState = {
+      want: null, inLane: false, serving: 0, stops: 0,
+      served: false, done: false, fitted: false,
+    };
+    // What the crew fits when the car stops without a call having been made.
+    this.pitChoice = 'medium';
+    this.wheelspin = 0;
+    this.lockup = 0;
+    this.lastAx = 0;
+    this.setCompound('medium');
+
     // A timed reserve rather than a second throttle.
     this.boost = {
       reserve: BOOST.capacity, capacity: BOOST.capacity, firing: false, cooldown: 0,
@@ -594,6 +623,14 @@ export class Car {
     }
   }
 
+  // Fitting a set is the one place the compound changes, so the sidewall and
+  // the physics can never disagree about what is on the car.
+  setCompound(key) {
+    this.tyres.fit(key);
+    this.tyreMat?.color.setHex(this.tyres.color);
+    if (this.tyreMat) this.tyreMat.emissive.setHex(this.tyres.color);
+  }
+
   get forward() {
     return new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw));
   }
@@ -612,6 +649,11 @@ export class Car {
       * (this.onRoad ? 1 : this.tune.offTrackGrip);
   }
 
+  // What the road gives, multiplied by what the tyres can still take from it.
+  surfaceGrip(roadGrip, wet) {
+    return roadGrip * (this.wearing ? this.tyres.grip(wet) : this.tyres.spec.grip);
+  }
+
   placeAt(slot) {
     this.position.copy(slot.position);
     this.yaw = slot.heading;
@@ -626,10 +668,13 @@ export class Car {
     this.mesh.rotation.y = this.yaw;
   }
 
-  resetToTrack(clock = 0) {
+  // `lateral` puts the car back on something other than the centreline, which
+  // is how a car recovered inside the pit lane ends up in the pit lane.
+  resetToTrack(clock = 0, lateral = 0) {
     const p = this.track.project(this.position, this.hintIndex);
     const f = this.track.frameAt(p.t);
-    this.position.copy(f.pos).setY(f.pos.y + ROAD_SURFACE);
+    this.position.copy(f.pos).addScaledVector(f.side, lateral)
+      .setY(f.pos.y + ROAD_SURFACE);
     this.yaw = Math.atan2(f.tan.x, f.tan.z);
     this.velocity.set(0, 0, 0);
     this.speed = 0;
@@ -649,9 +694,10 @@ export class Car {
   // tyres decide what the car does about it. Yaw is something the car has, not
   // something the steering wheel writes directly, which is why it settles
   // instead of snapping.
-  update(dt, grip) {
+  update(dt, roadGrip, wet = 0) {
     const i = this.input;
     const tune = this.tune;
+    const grip = this.surfaceGrip(roadGrip, wet);
     this.gripMul = grip;
     this.prevPosition.copy(this.position);
     this.prevYaw = this.yaw;
@@ -676,7 +722,11 @@ export class Car {
       tune.maxSteer,
       Math.max(tune.minSteer, geometric + this.peakSlip * tune.steerOverrun),
     );
-    const target = i.steer * lock;
+    // Shape the request before it becomes an angle. The tyre curve is steep
+    // near the centre, so a linear input spends most of the grip in the first
+    // third of the travel and the rest of it does nothing.
+    const asked = Math.sign(i.steer) * Math.abs(i.steer) ** tune.steerCurve;
+    const target = asked * lock;
     const rate = (i.steer === 0 ? tune.steerReturn : tune.steerRate) * dt;
     this.steer += clamp(target - this.steer, -rate, rate);
 
@@ -685,25 +735,11 @@ export class Car {
     let vL = this.velocity.dot(right);
     let r = this.yawRate;
 
-    // --- longitudinal -----------------------------------------------------
-    let force = 0;
-    // Constant force below the power band, constant power above it.
-    const driveForce = tune.enginePower
-      * Math.min(1, tune.powerBand / Math.max(Math.abs(vF), tune.powerBand));
-    const thrust = i.throttle > 0 ? i.throttle * driveForce * (vF < 0 ? 1.6 : 1) : 0;
-    const boostThrust = this.#updateBoost(dt, i, vF);
-    force += thrust + boostThrust;
-    if (i.brake > 0) {
-      force -= vF > 0.5
-        ? i.brake * tune.brakePower
-        : i.brake * tune.enginePower * tune.reverseFactor;
-    }
-    const surfaceDrag = this.onRoad ? 0 : tune.offTrackDrag;
-    force -= Math.sign(vF) * (tune.rollResist + surfaceDrag) * tune.mass * 0.01;
-    force -= tune.dragCoeff * vF * Math.abs(vF);
-    const ax = force / tune.mass;
-
-    // --- tyres ------------------------------------------------------------
+    // --- axle loads -------------------------------------------------------
+    // Loads come first, because what the engine and the brakes are allowed to
+    // do is decided by what the tyres under them can hold. Load transfer uses
+    // last step's acceleration: at 120 Hz that is the same number to three
+    // decimals, and it breaks the circle between force and load.
     const a = tune.frontAxle, b = tune.rearAxle, L = a + b;
     // Downforce is wheel load, not extra friction. That distinction matters:
     // aero load does not shift forward or back under acceleration, so the
@@ -711,12 +747,45 @@ export class Car {
     // axle — which is why a fast car can still turn while accelerating.
     const mu = (tune.gripLat / 9.81) * grip * (this.onRoad ? 1 : tune.offTrackGrip);
     const aeroLoad = (tune.downforce * speed * speed) * tune.mass * (9.81 / tune.gripLat);
-    // Accelerating shifts load rearwards, braking shifts it forwards.
     const weight = tune.mass * 9.81;
-    const transfer = clamp(tune.mass * ax * tune.cogHeight / L, -weight * 0.3, weight * 0.3);
+    const transfer = clamp(tune.mass * this.lastAx * tune.cogHeight / L,
+      -weight * 0.3, weight * 0.3);
     const loadFront = Math.max(0, weight * (b / L) - transfer + aeroLoad * tune.aeroBalance);
     const loadRear = Math.max(0, weight * (a / L) + transfer + aeroLoad * (1 - tune.aeroBalance));
+    const rearCap = mu * loadRear * tune.rearGripBias;
+    const frontCap = mu * loadFront;
 
+    // --- longitudinal -----------------------------------------------------
+    // Constant force below the power band, constant power above it.
+    const driveForce = tune.enginePower
+      * Math.min(1, tune.powerBand / Math.max(Math.abs(vF), tune.powerBand));
+    const demand = i.throttle > 0 ? i.throttle * driveForce * (vF < 0 ? 1.6 : 1) : 0;
+    const boostDemand = this.#updateBoost(dt, i, vF);
+    // The road can only push back as hard as the rear tyres can grip it.
+    // Without this the car took full acceleration AND lost all its cornering
+    // grip to a force the tyres were never making — which is exactly why a wet
+    // circuit used to turn every corner into a slide.
+    const pull = demand + boostDemand;
+    const traction = Math.max(0, rearCap * 0.97);
+    const drive = Math.min(pull, traction);
+    this.wheelspin = pull > 1 ? Math.min(1, (pull - drive) / Math.max(1, pull)) : 0;
+
+    // Brakes are limited the same way, by all four tyres together.
+    const brakeAsked = i.brake > 0 && vF > 0.5 ? i.brake * tune.brakePower : 0;
+    const brakeGrip = (frontCap + rearCap) * 0.98;
+    const brakeForce = Math.min(brakeAsked, brakeGrip);
+    this.lockup = brakeAsked > 1 ? Math.min(1, (brakeAsked - brakeForce) / brakeAsked) : 0;
+
+    let force = drive - brakeForce;
+    if (i.brake > 0 && vF <= 0.5) force -= i.brake * tune.enginePower * tune.reverseFactor;
+    const surfaceDrag = this.onRoad ? 0 : tune.offTrackDrag;
+    force -= Math.sign(vF) * (tune.rollResist + surfaceDrag) * tune.mass * 0.01;
+    force -= tune.dragCoeff * vF * Math.abs(vF);
+    force -= this.#pitLimiter(vF);
+    const ax = force / tune.mass;
+    this.lastAx = ax;
+
+    // --- tyres ------------------------------------------------------------
     const u = Math.max(speed, 1.2);          // keep the slip angles well behaved
     const dir = vF >= 0 ? 1 : -1;
     const slipFront = Math.atan((vL + a * r) / u) - this.steer * dir;
@@ -728,10 +797,8 @@ export class Car {
     // to carry a corner it no longer has the load for.
     const budget = (capacity, longitudinal) =>
       Math.sqrt(Math.max(0, capacity * capacity - longitudinal * longitudinal));
-    const brakeForce = i.brake > 0 && vF > 0.5 ? i.brake * tune.brakePower : 0;
-    const frontCapacity = budget(mu * loadFront, brakeForce * 0.62);
-    const rearCapacity = budget(mu * loadRear * tune.rearGripBias,
-      (thrust + boostThrust) + brakeForce * 0.38);
+    const frontCapacity = budget(frontCap, brakeForce * 0.62);
+    const rearCapacity = budget(rearCap, drive + brakeForce * 0.38);
 
     let forceFront = tyreForce(slipFront, frontCapacity, tune);
     let forceRear = tyreForce(slipRear, rearCapacity, tune);
@@ -771,11 +838,13 @@ export class Car {
     // Stick to the road surface and bounce off the barriers.
     const p = this.track.project(this.position, this.hintIndex);
     this.hintIndex = p.index;
-    this.onRoad = Math.abs(p.lateral) <= this.track.roadHalf + 1.2;
+    // The pit lane is sealed surface too, so a car in it is on the road.
+    this.onRoad = this.track.drivable(p.t, p.lateral);
 
     // Stop the body at the barrier face, not at its centreline, so the car
-    // never visually sinks into the wall it is resting against.
-    const wallAt = this.track.wallFace - tune.halfWidth;
+    // never visually sinks into the wall it is resting against. Over the pit
+    // lane the wall on that side is the far side of the lane.
+    const wallAt = this.track.wallLimit(p.t, Math.sign(p.lateral) || 1) - tune.halfWidth;
     if (Math.abs(p.lateral) > wallAt) {
       const over = Math.abs(p.lateral) - wallAt;
       this.position.addScaledVector(p.side, -Math.sign(p.lateral) * over);
@@ -790,12 +859,103 @@ export class Car {
 
     this.#syncMesh(dt, vF, vL);
     this.#trackProgress(p);
+    this.#updatePit(dt, p);
+    if (this.wearing) {
+      this.tyres.wear(dt, {
+        lateral: this.latAccel,
+        limit: this.lateralGrip(speed),
+        // Spinning wheels and locked wheels take rubber off faster than
+        // cornering does; that is why a clumsy driver stops sooner.
+        slide: this.slide + this.wheelspin * 7,
+        locked: this.lockup,
+        abrasive: this.track.spec.surface === 'dirt' ? 1.7 : 1,
+        wetness: wet,
+      });
+    }
+  }
+
+  // Ask for a stop. The car takes it the next time it is in the box, stopped.
+  requestPit(compound) {
+    this.pitState.want = compound;
+  }
+
+  cancelPit() {
+    this.pitState.want = null;
+    this.pitState.serving = 0;
+    this.pitState.done = false;
+  }
+
+  get inPitLane() { return this.pitState.inLane; }
+  get pitProgress() {
+    return this.pitState.want ? Math.min(1, this.pitState.serving / PIT.service) : 0;
+  }
+
+  consumePitFlag() {
+    const f = this.pitState.served;
+    this.pitState.served = false;
+    return f;
+  }
+
+  // Being worked on is a state, not an event: stopped on the box with a set
+  // called for, held there until the crew is done.
+  #updatePit(dt, p) {
+    const st = this.pitState;
+    st.inLane = this.track.inPitLane(p.t, p.lateral);
+    // One service per visit. Leaving the lane is what arms the next one, or a
+    // car that stayed parked on the box would be re-shod every few seconds.
+    if (!st.inLane) { st.serving = 0; st.done = false; return; }
+    // Stopping on the box is the call. A driver who takes the lane and pulls up
+    // gets serviced whether or not they told the pit wall first, which is what
+    // taking the lane means.
+    if (!st.done && this.wearing
+        && this.track.inPitBox(p.t, p.lateral) && Math.abs(this.speed) < 1.2) {
+      st.serving += dt;
+      this.velocity.set(0, 0, 0);
+      this.speed = 0;
+      this.yawRate = 0;
+      // The wheels are on well before the car comes off the jacks, so the set
+      // is fitted at the point the crew actually fits it. Grip changing while
+      // the car is held still costs nothing and keeps rubber and colour in step.
+      if (!st.fitted && st.serving >= PIT.service * 0.55) {
+        this.setCompound(st.want ?? this.pitChoice ?? this.tyres.compound);
+        st.fitted = true;
+      }
+      if (st.serving >= PIT.service) {
+        st.want = null;
+        st.serving = 0;
+        st.fitted = false;
+        st.stops += 1;
+        st.served = true;
+        st.done = true;
+      }
+    } else if (Math.abs(this.speed) > 2) {
+      st.serving = 0;
+      st.fitted = false;
+    }
+  }
+
+  // The driver hands the car to the lane: the same line the AI takes, so there
+  // is one description of how a car gets from the entry to the box.
+  pitLaneInput(p, len) {
+    this.#drivePitLane(p, len);
+    return this.input;
+  }
+
+  // The lane has a speed limit, and a limiter is what holds a car to it.
+  #pitLimiter(vF) {
+    if (!this.pitState.inLane) return 0;
+    const over = Math.abs(vF) - PIT.limit;
+    if (over <= 0) return 0;
+    return Math.sign(vF) * Math.min(1, over / 3) * this.tune.mass * 7.5;
   }
 
   // Draw the car between the last two physics states. Everything that is not
   // position or heading can be written straight out: it is already smooth.
   render(alpha) {
     this.mesh.position.lerpVectors(this.prevPosition, this.position, alpha);
+    // The jacks are the crew's business, not the physics': the body is drawn
+    // lifted, while the car the simulation knows about stays on the ground.
+    this.mesh.position.y += this.pitLift ?? 0;
     const d = Math.atan2(
       Math.sin(this.yaw - this.prevYaw), Math.cos(this.yaw - this.prevYaw),
     );
@@ -899,12 +1059,15 @@ export class Car {
 
   // Solving v^2 = (mechanical + downforce * v^2) * grip * radius for v. Past a
   // certain radius the aero term alone carries the corner, so it is flat out.
+  // A driver cannot spend the whole grip budget on the corner and still drive
+  // out of it, so the estimate is taken at a margin, and the aero share is
+  // capped: at the limit the formula divides by nothing and promises a speed
+  // no tyre can hold.
   #cornerSpeed(t, arc) {
     const { radius } = this.#bend(t, arc);
     const grip = this.gripMul;
-    const aeroShare = this.tune.downforce * grip * radius;
-    if (aeroShare >= 0.92) return 999;
-    return Math.sqrt((this.tune.gripLat * grip * radius) / (1 - aeroShare));
+    const aeroShare = Math.min(0.85, this.tune.downforce * grip * radius);
+    return Math.sqrt((this.tune.gripLat * grip * radius) / (1 - aeroShare)) * 0.94;
   }
 
   driveAI(dt, clock) {
@@ -912,6 +1075,30 @@ export class Car {
     const len = track.length;
     const p = track.project(this.position, this.hintIndex);
     const speed = Math.max(3, Math.abs(this.speed));
+
+    // Strategy: call a stop before the cliff, not after it, and fit whatever
+    // compound will see the rest of the race out.
+    if (this.wearing && this.pitAllowed && !this.pitState.want
+        && this.tyres.life < 0.20 && (this.lapsLeft ?? 99) > 1) {
+      this.requestPit(this.lapsLeft > 26 ? 'hard' : this.lapsLeft > 11 ? 'medium' : 'soft');
+    }
+    // A car that has stopped where it should not be is recovered: on the
+    // circuit to the racing line, in the pit lane to the middle of the lane.
+    // Without the second case a spin inside the lane is a dead car, because
+    // nothing out there is going to move it.
+    const parked = this.kmh < 14 && !track.inPitBox(p.t, p.lateral);
+    this.stuckFor = parked ? (this.stuckFor ?? 0) + dt : 0;
+    if (this.stuckFor > 3
+        && (this.pitState.inLane || Math.abs(p.lateral) > track.roadHalf + 1.6)) {
+      this.resetToTrack(clock, this.pitState.inLane ? track.pit.centre * track.pit.side : 0);
+      this.stuckFor = 0;
+      return;
+    }
+
+    if (this.pitState.want && track.pitPhase(p.t) !== null) {
+      this.#drivePitLane(p, len);
+      return;
+    }
 
     // Aim a fixed time ahead, then pull the aim point toward the inside of
     // the corner the car is already in.
@@ -954,7 +1141,41 @@ export class Car {
     this.input.boost = here.radius > 400 && this.boost.reserve > this.boost.capacity * 0.5
       && this.input.brake === 0;
 
-    if (Math.abs(p.lateral) > this.track.roadHalf + 1.6 && this.kmh < 22) this.resetToTrack(clock);
+  }
+
+  // Down the lane at the limit, stop on the box, then back out. The same line
+  // the player drives, aimed at the lane centre instead of the racing line.
+  #drivePitLane(p, len) {
+    const track = this.track;
+    const pit = track.pit;
+    const speed = Math.abs(this.speed);
+    const aim = track.frameAt(p.t + Math.max(8, speed * 0.6) / len);
+    const goal = aim.pos.clone().addScaledVector(aim.side, pit.side * pit.centre);
+
+    const toGoal = goal.sub(this.position).setY(0);
+    const err = Math.atan2(
+      Math.sin(Math.atan2(toGoal.x, toGoal.z) - this.yaw),
+      Math.cos(Math.atan2(toGoal.x, toGoal.z) - this.yaw),
+    );
+    this.input.steer = clamp(err * 2.1 - this.yawRate * 0.3, -1, 1);
+    this.input.boost = false;
+    this.input.handbrake = false;
+
+    // Distance to the box along the lane, so the car brakes for it in time.
+    // Short of the box the car keeps a crawl on: braking to a stop on the
+    // approach leaves it parked a few metres out, where nobody can work on it.
+    const toBox = ((pit.box - p.t) + 1) % 1 * len;
+    const onBox = track.inPitBox(p.t, p.lateral);
+    const target = onBox ? 0
+      : toBox < 40 ? Math.max(2.2, toBox * 0.34)
+        : pit.limit * 0.94;
+    if (speed > target + 0.6) {
+      this.input.throttle = 0;
+      this.input.brake = clamp((speed - target) / 6, 0.2, 1);
+    } else {
+      this.input.brake = 0;
+      this.input.throttle = clamp((target - speed) / 5, 0, 0.55);
+    }
   }
 }
 
@@ -1021,6 +1242,7 @@ export class RemoteCar {
     this.wheels = built.wheels;
     this.headMat = built.headMat;
     this.tailMat = built.tailMat;
+    this.tyreMat = built.tyreMat;
 
     this.label = makeLabel(name, color);
     this.mesh.add(this.label);

@@ -92,19 +92,31 @@ so none of it clutters the home screen.
 |---|---|
 | `W` / `↑` | Throttle |
 | `S` / `↓` | Brake, then reverse |
-| `A` `D` / `←` `→` | Steer |
+| `A` `D` / `←` `→` | Steer (ramped: ~0.18 s to full lock, ~0.11 s back to centre) |
 | `Space` | Handbrake (breaks rear grip for drifts) |
 | `C` | Cycle camera: chase, hood, cinematic |
 | `V` | Cycle vision: Day, Sunset, Dusk, Night, Neon |
 | `B` | Cycle weather: Clear, Rain, Storm, Fog, Snow |
 | `Shift` | Boost (costs a charge) |
+| `1` `2` `3` | Pick the next tyre compound: soft, medium, hard |
+| `T` | Call a pit stop, or wave one off |
+| `P` | Hand the car to the pit lane and back again |
 | `M` | Mute |
 | `R` | Respawn on the racing line |
 | `Esc` | Back to menu |
 
 On a phone or tablet the on-screen controls appear automatically: drag anywhere
 on the left pad to steer, gas and brake on the right, with boost and handbrake
-above them.
+above them. Steering has a small dead zone and an expo curve, so a slight thumb
+movement is a slight correction and full lock lives at the edge of the travel;
+once the thumb passes full travel the origin follows it, so lock can always be
+wound back off without lifting.
+
+While those controls are up the HUD rearranges itself around them: the dial
+gives up the bottom-right corner to the pedals and becomes one strip across the
+top with speed, gear, boost and tyres, the camera and menu buttons move to the
+free edge, and nothing overlaps the thumbs. On a narrow screen the strip takes
+the top edge on its own and the rest of the HUD starts below it.
 
 ## Boost and points
 
@@ -121,6 +133,37 @@ Boost is on screen during every race — the amber **BOOST** button under the
 dial, or the `Shift` key, or `A` on a gamepad. It greys out when you have no
 charges left. A gamepad steers properly analogue: left stick for steering,
 triggers for throttle and brake.
+
+## Steering
+
+A key is all or nothing and a car's wheel is not, so the key axis is ramped —
+about 0.18 s to full lock, 0.11 s back to centre. A tap is a correction, a held
+arrow still reaches the stop immediately enough to catch a corner.
+
+The input is then shaped before it becomes an angle, and how much angle full
+input is worth was retuned. The tyre curve is steep near the centre, so a linear
+input spent almost all of the grip in the first third of the travel and the rest
+of it did nothing: at 180 km/h, a third of the input already asked for 93% of
+peak grip. Worse, full lock asked 1.4× past the peak of the curve, where force
+is falling away — so holding the arrow key down turned *less* sharply than
+holding three quarters of it. Full input must be the strongest input.
+
+Now the request is raised to a power before it is scaled by the lock, the lock
+itself stops just past the peak rather than well beyond it, and the wheel itself
+moves faster (6.8 rad/s, up from 4.6). Mechanical grip and downforce were both
+raised with it, so there is more corner to reach. Measured on a car holding
+lock for three seconds, degrees of heading turned:
+
+| | ⅓ input | ⅔ input | full |
+|---|---|---|---|
+| 220 km/h | 122 | 149 | 144 |
+| 180 km/h | 115 | 146 | 141 |
+| 120 km/h | 105 | 152 | 146 |
+
+Before the change every one of those cells sat between 98 and 113 whatever the
+input was. The AI's corner-speed estimate takes a margin off the new grip rather
+than assuming all of it, so it still laps every weather with no time off the
+road.
 
 ## Driving model
 
@@ -166,6 +209,7 @@ drives like. There is no per-car physics path.
 | Green Lane | Asphalt | 18 m | 93% | Fences |
 | Dock Quarter | Asphalt | 21 m | 96% | Concrete blocks |
 | Harbour Mile | Asphalt | 26 m | 98% | Concrete blocks |
+| Grand Stadium | Asphalt | 27 m | 100% | Concrete blocks |
 
 Surface grip multiplies with the weather, so Dust Bowl in the snow is a very
 different proposition from Apex Ring in the dry.
@@ -186,12 +230,127 @@ Circuits are populated: spectators gather at the slow corners, a town has lit
 windows, pavements and street lamps, a village has fences, trees, cattle and a
 river through the fields.
 
+Spectators are people, not bollards. Each one is built from two legs and two
+shoes, a torso with shoulders across the top of it, two arms hung from those
+shoulders with hands on the ends, a neck, a head and hair — and a cap on about
+a third of them. Heights, skin tones, hair, shirts, trousers and sleeve length
+all vary per figure, and the stance is jittered so no two stand identically.
+
+They move on the GPU. Every figure carries a phase, and one patched vertex
+shader reads it to give each of them their own tempo as well as their own
+timing, bob the body, lean it toward the track, and swing the arms from the
+shoulder — about a third clap in front of them instead of throwing both arms
+up, which is what a stand actually looks like. Nothing is written per frame
+except two uniforms, so five thousand people cost no more CPU than fifty. They
+do not cast shadows (a second pass over that many figures is not worth it) but
+they do take them, so the ones under the stand roof are lit as if it were
+there.
+
+They react to the race: an overtake, a lap, a pit stop or the flag lifts both
+what they are doing and what they sound like.
+
+**Grand Stadium** is a closed arena ringed by tiered galleries: twelve rows of
+terracing on both sides of the whole loop, roofed and posted, with six
+floodlight masts over it. It holds about 5,600 people (scaled down on a phone,
+which draws the same crowd with fewer triangles each rather than fewer people).
+Seven in ten are seated in the galleries and the rest are on the ground, packed
+four rows deep against the fence the whole way round.
+
+### What a crowd sounds like
+
+Noise shaped like a thousand voices at once. Three resonances in the range a
+voice occupies — a chest band near 260 Hz, a vowel formant that drifts the way
+a crowd's does, and a bright roar band that comes up only when they are
+actually shouting — over a slow swell, because a crowd is never at a constant
+volume. A big crowd also finds things to shout about on its own every few
+seconds, on top of the cheers the race itself triggers. All of it scales with
+how many people the circuit holds, so Grand Stadium is loud over the engine and
+Canyon Run is nearly silent.
+
 ## Modes
 
-- **Race** — 3 laps against 3 AI drivers. Position scores on laps, then on
-  distance round the current lap.
-- **Time Trial** — empty circuit, chase your own best lap.
+- **Race** — 3 laps against 3 AI drivers on softs. Position scores on laps, then
+  on distance round the current lap.
+- **Grand Prix** — 54 laps against 5 drivers, with tyre wear and a pit lane. The
+  field starts spread across the compounds, and nobody finishes on one set.
+- **Time Trial** — empty circuit, chase your own best lap. No wear.
 - **Free Roam** — no flag and no clock; swap skies and weather freely.
+
+## Tyres and the pit lane
+
+Three compounds, the way a race weekend uses them:
+
+| Compound | Grip | Wear | In the wet |
+|---|---|---|---|
+| **S** Soft | +10% | 2.00× | Worst |
+| **M** Medium | baseline | 1.00× | baseline |
+| **H** Hard | −8% | 0.55× | Best |
+
+Soft is the grippiest set on any surface and hard the least, always — the water
+penalty changes how much each keeps, never the order. Measured on a car holding
+a corner at 180 km/h, degrees of heading turned in three seconds:
+
+| | soft | medium | hard |
+|---|---|---|---|
+| Dry | 159 | 145 | 134 |
+| Rain | 138 | 128 | 119 |
+
+Water also *slows* wear rather than adding to it: a wet track is cool and keeps
+the tyre off its limit, so a set lasts about a third longer in the rain than in
+the dry. What the rain changes is the reason to run a harder set, which is that
+it is still there twenty laps later.
+
+A set has a life, and grip falls as that life is spent: about seventy per cent
+of the compound's own grip by the time it is gone, with the last tenth falling
+away faster than the rest — the cliff a driver feels before they see it. A worn
+set is slow, not undriveable: the stop has to be a decision, not a rescue. Cornering
+load spends life, and wheelspin and locked brakes spend far more of it, so a
+clumsy driver stops sooner than a tidy one. Dirt eats rubber faster than asphalt.
+
+Every circuit has a pit lane along the start/finish straight, outside the
+barrier line, with a wall, a working box and the garages behind it. The lane is
+open for the whole race in any mode that wears tyres: **taking the lane and
+pulling up on the box is the call.** Pick the compound with `1`/`2`/`3` (or the
+**S M H** buttons on the HUD) and it is what the crew fits, whether or not you
+told the pit wall first. `T` and **BOX** still announce a stop, which is useful
+for knowing what you asked for, but nothing waits on it. A limiter holds the car
+to 80 km/h down the lane, and stopping on the box holds it there while the crew
+works. The AI runs the same strategy on the same lane — it calls a stop before
+the cliff, not after it, and fits whatever compound will see the rest of the
+race out.
+
+### One button for the whole stop
+
+**ENTER PIT LANE** on the HUD, **PIT** on a phone, or `P`. It calls the stop if
+one has not been called, then hands the car to the lane: from the pit entry it
+drives itself down at the limit and pulls up square on the box, which is the
+same line the AI drives — one description of how a car gets from the entry to
+the box, used by both. Touching the throttle, the brake or the wheel takes the
+car straight back, and the assist releases itself the moment the stop is done.
+
+### The crew
+
+Eight of them, in team colours, waiting at the wall with two spare wheels at
+their feet whenever there is a car in the pit lane. When one stops on the box
+they come over the line and take a position each: a wheel man at every corner,
+a jack man at each end, a fuel man at the flank, and the lollipop man in front
+of the car with the board down where the driver can read it.
+
+The stop is a timeline, and every part of it is on screen: the jacks go under
+and the car rises 13 cm, the wheel men crouch and the old wheels come off the
+hubs and out to the side, the new set goes on — which is the moment the
+compound actually changes, so the sidewall colour and the grip change together
+— the car drops, the board lifts, and they walk back to the wall.
+
+They are built as real jointed figures rather than the instanced, shader-posed
+bodies in the grandstand: hips, chest, shoulders, elbows, knees, helmet and
+visor, posed in JavaScript. Eight figures can afford the joints where five
+thousand cannot. They are drawn only while a car is in the pit lane's stretch
+of the circuit, which is the only place they can be seen from — the rest of the
+race costs nothing at all.
+
+The sidewall band on each wheel carries the compound's colour, so which set a
+car is on is readable from the chase camera as well as from the HUD.
 
 ## Visions and weather
 
@@ -201,8 +360,17 @@ top: grip, fog compression, light level, particle field, and road wetness.
 They combine, so Night + Storm is a different drive from Day + Clear — the
 two systems never branch against each other.
 
-Grip runs from 100% (Clear) down to 55% (Snow). Leaving the tarmac costs
-grip again, and the HUD grip readout reflects both at once.
+Grip runs from 100% (Clear) down to 73% (Snow). Leaving the tarmac costs grip
+again, and the HUD grip readout reflects both at once.
+
+What the weather sets is what the *road* gives back, not what the car can use.
+The engine can only push as hard as the rear tyres can grip, and the brakes only
+as hard as all four can: both are clamped to the load under them before anything
+reaches the car. Without that clamp a wet car took full acceleration while
+spending grip it was never making, which left the driving axle nothing for the
+corner — every corner in the rain became a slide. With it, a lap of a snow-bound
+circuit goes from one lap at 26 km/h average, nine seconds of it off the road,
+to four clean laps at 152.
 
 ## Simulation
 
@@ -222,6 +390,9 @@ style.css          HUD, gauge, menus, responsive rules
 src/config.js      every tunable: car baseline, chassis, circuits, visions, weathers, modes, boost
 src/layout.js      driving scripts to centrelines, shared by the track and the menu
 src/wallet.js      boost charges and points, and the rules for both
+src/tyres.js       compounds, tyre life and the grip that falls with it
+src/crowd.js       instanced spectators and their vertex-shader animation
+src/pit-crew.js    the eight-strong crew, the jacks, and the wheel change
 src/audio.js       synthesised music, engine, impacts, pass-bys
 src/effects.js     pooled tyre smoke and impact debris
 src/touch.js       on-screen controls for phones

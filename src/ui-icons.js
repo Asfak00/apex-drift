@@ -13,6 +13,14 @@ export const MODE_ICONS = {
     <path d="M10 4v26" class="s"/>
     <path d="M13 6h9v5h-9zM22 11h9v5h-9zM13 11h9v5h-9z" class="f2"/>
     <path d="M22 6h9v5h-9zM13 16h9v5h-9zM22 16h9v5h-9z" class="f1"/>`),
+  // A grand prix is a long race on a strategy: a flag over a stack of laps
+  // and a set of tyres.
+  gp: svg(`
+    <path d="M8 5v28" class="s"/>
+    <path d="M11 7h8v5h-8zM19 12h8v5h-8z" class="f2"/>
+    <path d="M19 7h8v5h-8zM11 12h8v5h-8z" class="f1"/>
+    <circle cx="30" cy="27" r="7" class="s"/>
+    <circle cx="30" cy="27" r="2.6" class="f1"/>`),
   trial: svg(`
     <circle cx="24" cy="18" r="10" class="s"/>
     <path d="M24 12v6l4 3" class="s"/>

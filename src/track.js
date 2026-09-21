@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { PALETTE, TRACKS } from './config.js';
+import { PALETTE, TRACKS, PIT } from './config.js';
 import { sampleCentreline } from './layout.js';
+import { Crowd } from './crowd.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -22,6 +23,20 @@ export class Track {
       ? Infinity
       : this.roadHalf + BARRIER_OFFSET - BARRIER_DEPTH / 2;
     this.surfaceGrip = spec.grip;
+
+    // The pit lane is a second ribbon outside the barrier line on one side of
+    // the start/finish straight. Everything that asks "is this drivable" or
+    // "where is the wall" asks the track, so the lane is one description here
+    // rather than a special case in the car.
+    this.pit = {
+      ...PIT,
+      side: 1,
+      centre: this.roadHalf + PIT.gap,
+      inner: this.roadHalf + PIT.gap - PIT.half,
+      outer: this.roadHalf + PIT.gap + PIT.half,
+      span: ((PIT.exit - PIT.entry) + 1) % 1,
+    };
+    this.pitWallFace = this.pit.outer + 0.9 - BARRIER_DEPTH / 2;
     this.bank = spec.bank;
     this.baseColors = { road: spec.road, ground: spec.ground, hills: spec.hills };
 
@@ -57,6 +72,7 @@ export class Track {
     if (this.junctions.length) this.#buildJunctions();
     this.#buildBarriers();
     this.#buildStartLine();
+    this.#buildPitLane();
     this.#buildScenery();
   }
 
@@ -109,6 +125,48 @@ export class Track {
       side: frame.side,
       onRoad: Math.abs(delta.dot(frame.side)) <= this.roadHalf,
     };
+  }
+
+  // How far into the pit lane's t-span a point is, 0 at the entry and 1 at the
+  // rejoin, or null when the point is nowhere near it.
+  pitPhase(t) {
+    const d = ((t - this.pit.entry) % 1 + 1) % 1;
+    return d <= this.pit.span ? d / this.pit.span : null;
+  }
+
+  // The barrier a car resting against this side of the road would touch. Over
+  // the pit lane there is no barrier on the pit side: the wall is the far side
+  // of the lane instead. The swap is tapered so the wall never jumps sideways
+  // under a car that is already leaning on it.
+  wallLimit(t, sign) {
+    if (this.barriers === 'none') return Infinity;
+    if (sign !== this.pit.side) return this.wallFace;
+    const phase = this.pitPhase(t);
+    if (phase === null) return this.wallFace;
+    const taper = Math.min(1, phase / 0.12, (1 - phase) / 0.12);
+    return this.wallFace + (this.pitWallFace - this.wallFace) * Math.max(0, taper);
+  }
+
+  // Sealed surface: the circuit itself, plus the pit lane where there is one.
+  drivable(t, lateral) {
+    if (Math.abs(lateral) <= this.roadHalf + 1.2) return true;
+    return this.inPitLane(t, lateral);
+  }
+
+  inPitLane(t, lateral) {
+    if (this.pitPhase(t) === null) return false;
+    const across = lateral * this.pit.side;
+    // Past the edge of the circuit, not merely on that half of it: a car
+    // hugging the pit-side kerb is still racing, and must not be limited.
+    return across > this.roadHalf + 0.6 && across < this.pit.outer + 1;
+  }
+
+  // Stopped on the box, ready to be worked on. Measured in metres, not in
+  // fractions of a lap, or the box would be a different size on every circuit.
+  inPitBox(t, lateral) {
+    if (!this.inPitLane(t, lateral)) return false;
+    const d = Math.abs(((t - this.pit.box) + 1.5) % 1 - 0.5) * this.length;
+    return d < 9;
   }
 
   // Grid slot: staggered behind the start line, alternating sides.
@@ -278,9 +336,14 @@ export class Track {
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
     let n = 0;
     for (let i = 0; i < SAMPLES; i += look.step) {
-      const f = this.frameAt(i / SAMPLES);
+      const t = i / SAMPLES;
+      const f = this.frameAt(t);
       const yaw = Math.atan2(f.tan.x, f.tan.z);
+      const open = this.pitPhase(t) !== null;
       for (const sgn of [-1, 1]) {
+        // No barrier where the pit lane leaves the circuit, or a car could
+        // never reach the lane the rules tell it to take.
+        if (open && sgn === this.pit.side) continue;
         const p = f.pos.clone()
           .addScaledVector(f.side, sgn * (this.roadHalf + BARRIER_OFFSET))
           .setY(f.pos.y + look.y);
@@ -328,6 +391,110 @@ export class Track {
     b.rotation.y = yaw;
     this.group.add(b);
     this.gantry = b;
+  }
+
+
+  // The pit lane: a sealed apron outside the barrier line, a wall along its far
+  // edge, a working box, and the garages behind it. It is built from the same
+  // frames the road is, so it follows whatever the circuit does there.
+  #buildPitLane() {
+    const pit = this.pit;
+    const side = pit.side;
+    const STEPS = 90;
+    const at = (k) => ((pit.entry + pit.span * (k / STEPS)) % 1 + 1) % 1;
+
+    const pos = [], idx = [], uv = [];
+    for (let k = 0; k <= STEPS; k++) {
+      const f = this.frameAt(at(k));
+      const phase = k / STEPS;
+      // The mouth and the exit taper in, so the lane reads as a road that
+      // peels off rather than a slab that appears.
+      const taper = Math.min(1, phase / 0.1, (1 - phase) / 0.1);
+      const inner = f.pos.clone().addScaledVector(f.side, side * (this.roadHalf + 0.2));
+      const outer = f.pos.clone()
+        .addScaledVector(f.side, side * (this.roadHalf + 0.2 + (pit.outer - this.roadHalf) * taper));
+      pos.push(inner.x, inner.y + 0.055, inner.z, outer.x, outer.y + 0.055, outer.z);
+      uv.push(0, phase * 60, 1, phase * 60);
+      if (k < STEPS) {
+        const v = k * 2;
+        idx.push(v, v + 2, v + 1, v + 1, v + 2, v + 3);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    this.pitMaterial = new THREE.MeshStandardMaterial({
+      color: 0x33373f, roughness: 0.9, metalness: 0.03,
+    });
+    const lane = new THREE.Mesh(g, this.pitMaterial);
+    lane.receiveShadow = true;
+    this.group.add(lane);
+
+    // A white line down the middle of the lane, and the box painted on it.
+    const paint = new THREE.MeshStandardMaterial({
+      color: 0xe6edf6, roughness: 0.65, emissive: 0x27303c, emissiveIntensity: 0.4,
+    });
+    const boxPaint = new THREE.MeshStandardMaterial({
+      color: 0x4de3b0, roughness: 0.6, emissive: 0x0d5f45, emissiveIntensity: 1.1,
+    });
+    const strip = new THREE.BoxGeometry(0.18, 0.02, 2.4);
+    for (let k = 2; k < STEPS - 2; k += 2) {
+      const t = at(k);
+      const f = this.frameAt(t);
+      const mark = new THREE.Mesh(strip, paint);
+      mark.position.copy(f.pos)
+        .addScaledVector(f.side, side * (pit.inner - 0.4)).setY(f.pos.y + 0.075);
+      mark.rotation.y = Math.atan2(f.tan.x, f.tan.z);
+      this.group.add(mark);
+    }
+    const boxFrame = this.frameAt(pit.box);
+    const boxYaw = Math.atan2(boxFrame.tan.x, boxFrame.tan.z);
+    const box = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.02, 6.4), boxPaint);
+    box.position.copy(boxFrame.pos)
+      .addScaledVector(boxFrame.side, side * pit.centre).setY(boxFrame.pos.y + 0.08);
+    box.rotation.y = boxYaw;
+    this.group.add(box);
+    this.pitBoxPoint = box.position.clone();
+
+    // The wall along the outside, and the garages standing behind it.
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: 0x9aa0a8, roughness: 0.92, emissive: 0x2a2f36, emissiveIntensity: 0.3,
+    });
+    const wallGeo = new THREE.BoxGeometry(0.9, 1.15, 3.2);
+    const wall = new THREE.InstancedMesh(wallGeo, wallMat, STEPS + 2);
+    const garageMat = new THREE.MeshStandardMaterial({
+      color: 0x1b2230, roughness: 0.8, metalness: 0.2,
+      emissive: 0x2b3a52, emissiveIntensity: 0.5,
+    });
+    const garageGeo = new THREE.BoxGeometry(6.4, 4.2, 7.0);
+    const garages = new THREE.InstancedMesh(garageGeo, garageMat, 14);
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
+    let wn = 0, gn = 0;
+    for (let k = 0; k <= STEPS; k++) {
+      const t = at(k);
+      const f = this.frameAt(t);
+      const yaw = Math.atan2(f.tan.x, f.tan.z);
+      q.setFromAxisAngle(UP, yaw);
+      const p = f.pos.clone()
+        .addScaledVector(f.side, side * (pit.outer + 0.9)).setY(f.pos.y + 0.6);
+      m.compose(p, q, one);
+      wall.setMatrixAt(wn++, m);
+      if (k % 7 === 3 && gn < 14) {
+        const gp = f.pos.clone()
+          .addScaledVector(f.side, side * (pit.outer + 6.4)).setY(f.pos.y + 2.1);
+        m.compose(gp, q, one);
+        garages.setMatrixAt(gn++, m);
+      }
+    }
+    wall.count = wn;
+    garages.count = gn;
+    wall.instanceMatrix.needsUpdate = true;
+    garages.instanceMatrix.needsUpdate = true;
+    wall.castShadow = garages.castShadow = true;
+    this.pitGarageMaterial = garageMat;
+    this.group.add(wall, garages);
   }
 
   // The circuit banks up to +/-5m, so a flat plane would bury its low sections.
@@ -412,8 +579,13 @@ export class Track {
     const pylons = new THREE.InstancedMesh(pyGeo, this.pylonMaterial, Math.ceil(SAMPLES / 22) * 2);
     let pn = 0;
     for (let i = 0; i < SAMPLES; i += 22) {
-      const f = this.frameAt(i / SAMPLES);
+      const pt = i / SAMPLES;
+      const f = this.frameAt(pt);
+      const lane = this.pitPhase(pt) !== null;
       for (const sgn of [-1, 1]) {
+        // The markers sit where the pit lane is. Anything standing in the lane
+        // is something a car being waved into it has to drive through.
+        if (lane && sgn === this.pit.side) continue;
         const p = f.pos.clone().addScaledVector(f.side, sgn * (this.roadHalf + 5.2)).setY(f.pos.y + 1.1);
         m.compose(p, new THREE.Quaternion(), new THREE.Vector3(1, 1, 1));
         pylons.setMatrixAt(pn++, m);
@@ -700,25 +872,39 @@ export class Track {
   // things in them that are not track.
   #buildLife() {
     const scenery = this.spec.scenery ?? 'hills';
-    this.#buildCrowd(scenery);
+    const density = this.spec.crowd ?? 0.25;
+    const coarse = matchMedia('(pointer: coarse)').matches;
+    // A stadium holds a stadium's worth of people; a country lane holds a few
+    // families on a bank. One dial, scaled down on a phone.
+    const capacity = Math.round(
+      (scenery === 'stadium' ? 5600 : 620) * density * (coarse ? 0.3 : 1));
+    // A phone draws the same people with fewer triangles each rather than
+    // fewer people: a thin crowd reads as an empty circuit, a coarse one does
+    // not read as anything at all from the car.
+    this.crowd = new Crowd(Math.max(48, capacity), coarse ? 0.6 : 1);
+
+    // The galleries are filled first, then whatever is left goes on the ground
+    // behind the barriers — a stadium has people standing at the fence as well
+    // as sitting in the stands.
+    const seated = Math.round(capacity * (scenery === 'stadium' ? 0.7 : 1));
+    for (const [from, length] of this.spec.stands ?? []) {
+      this.#buildStands(from, length, seated);
+    }
+    this.#buildTrackside(scenery);
+    this.group.add(this.crowd.finish());
+
+    if (scenery === 'stadium') this.#buildFloodlights();
     if (scenery === 'village') this.#buildLivestock();
     if (scenery === 'village' || scenery === 'hills') this.#buildWater();
   }
 
-  #buildCrowd(scenery) {
+  // The people who are not in a stand: standing on the banks at the corners,
+  // or on the pavement in a town.
+  #buildTrackside(scenery) {
     const town = scenery === 'town';
-    const bodyGeo = new THREE.CapsuleGeometry(0.21, 0.62, 3, 7);
-    const headGeo = new THREE.SphereGeometry(0.15, 7, 6);
-    const shirt = new THREE.MeshStandardMaterial({ roughness: 0.9 });
-    const skin = new THREE.MeshStandardMaterial({ color: 0xc89b74, roughness: 0.85 });
-    const cap = 150;
-    const bodies = new THREE.InstancedMesh(bodyGeo, shirt, cap);
-    const heads = new THREE.InstancedMesh(headGeo, skin, cap);
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
-    const tint = new THREE.Color();
-    let n = 0;
+    if (scenery === 'stadium') { this.#buildGroundCrowd(); return; }
 
-    for (let i = 0; i < SAMPLES && n < cap; i += 5) {
+    for (let i = 0; i < SAMPLES && !this.crowd.full; i += 5) {
       const t = i / SAMPLES;
       // On a circuit people gather where the cars are slowest; in a town they
       // are simply on the pavement.
@@ -730,32 +916,210 @@ export class Track {
       const f = this.frameAt(t);
       const yaw = Math.atan2(f.tan.x, f.tan.z);
       const group = town ? 1 : 2 + Math.floor(Math.random() * 3);
-      for (let k = 0; k < group && n < cap; k++) {
+      for (let k = 0; k < group && !this.crowd.full; k++) {
         const side = Math.random() < 0.5 ? -1 : 1;
-        // Always outside whatever edges the circuit, so nobody is standing
-        // where a car can reach.
+        // Never on the pit lane side of the pit straight, and always outside
+        // whatever edges the circuit.
+        if (side === this.pit.side && this.pitPhase(t) !== null) continue;
         const away = town
           ? this.roadHalf + BARRIER_OFFSET + 1.6 + Math.random() * 2.4
           : this.roadHalf + BARRIER_OFFSET + 2.2 + Math.random() * 6;
         const along = (Math.random() - 0.5) * 7;
         const at = f.pos.clone()
           .addScaledVector(f.side, side * away)
-          .addScaledVector(f.tan, along);
-        q.setFromAxisAngle(UP, yaw + (Math.random() - 0.5));
-        m.compose(at.clone().setY(f.pos.y + 0.52), q, one);
-        bodies.setMatrixAt(n, m);
-        m.compose(at.clone().setY(f.pos.y + 1.06), q, one);
-        heads.setMatrixAt(n, m);
-        tint.setHSL(Math.random(), 0.55, 0.46);
-        bodies.setColorAt(n, tint);
-        n += 1;
+          .addScaledVector(f.tan, along)
+          .setY(f.pos.y);
+        // Spectators watch the cars, so they face the road they are beside.
+        this.crowd.add(at, yaw + (side * Math.PI) / 2 + (Math.random() - 0.5) * 0.5);
       }
     }
-    bodies.count = heads.count = n;
-    bodies.instanceMatrix.needsUpdate = heads.instanceMatrix.needsUpdate = true;
-    if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
-    bodies.castShadow = true;
-    this.group.add(bodies, heads);
+  }
+
+  // The people packed against the fence at ground level, in front of the
+  // stands and all the way round. They stand in rows, closest first, because
+  // that is how a crowd fills a space it is allowed to stand in.
+  #buildGroundCrowd() {
+    const base = this.roadHalf + BARRIER_OFFSET + 0.9;
+    const step = 22;
+    for (let pass = 0; pass < 4 && !this.crowd.full; pass++) {
+      for (let i = 0; i < SAMPLES && !this.crowd.full; i += 3) {
+        const t = i / SAMPLES;
+        const f = this.frameAt(t);
+        const yaw = Math.atan2(f.tan.x, f.tan.z);
+        for (const side of [-1, 1]) {
+          if (side === this.pit.side && this.pitPhase(t) !== null) continue;
+          if (Math.random() > 0.55) continue;
+          const away = base + pass * 0.62 + Math.random() * 0.3;
+          const along = (Math.random() - 0.5) * (this.length / SAMPLES) * step * 0.12;
+          const at = f.pos.clone()
+            .addScaledVector(f.side, side * away)
+            .addScaledVector(f.tan, along)
+            .setY(f.pos.y);
+          // Everyone at the fence is watching the road beside them.
+          this.crowd.add(at, yaw - (side * Math.PI) / 2 + (Math.random() - 0.5) * 0.3);
+        }
+      }
+    }
+  }
+
+  // A tiered gallery along one span of the circuit: treads and risers as a
+  // single stepped ribbon, a roof over the back of it, and people on the steps.
+  // `from` and `length` are fractions of a lap; a length of 1 rings the loop.
+  #buildStands(from, length, budget = this.crowd.capacity) {
+    const TIERS = 12, TREAD = 0.95, RISE = 0.62;
+    const base = this.roadHalf + BARRIER_OFFSET + 3.8;
+    const depth = TIERS * TREAD;
+    const top = TIERS * RISE;
+    const closed = length >= 0.999;
+    const arc = this.length * length;
+    const steps = Math.max(12, Math.round(arc / 6));
+
+    // Cross-section of the terracing, as (out, up) pairs from the front edge.
+    const profile = [[0, 0]];
+    for (let k = 0; k < TIERS; k++) {
+      profile.push([k * TREAD, (k + 1) * RISE], [(k + 1) * TREAD, (k + 1) * RISE]);
+    }
+    profile.push([depth, 0]);            // back wall drops to the ground
+
+    // The two banks are mirrored, so one of them is wound the other way round.
+    // Both faces are drawn rather than winding each side separately: a stand is
+    // seen from inside as well as out.
+    const concrete = new THREE.MeshStandardMaterial({
+      color: 0x6f7883, roughness: 0.95, metalness: 0.02, side: THREE.DoubleSide,
+    });
+    const steel = new THREE.MeshStandardMaterial({
+      color: 0x28303c, roughness: 0.45, metalness: 0.7,
+      emissive: 0x18324a, emissiveIntensity: 0.5, side: THREE.DoubleSide,
+    });
+
+    // Both sides of the road, except where the pit lane owns the verge.
+    for (const side of [-1, 1]) {
+      const pos = [], idx = [], roofPos = [], roofIdx = [];
+      const rows = profile.length;
+      let ring = 0;
+      const postAt = [];
+
+      for (let k = 0; k <= steps; k++) {
+        const t = ((from + length * (k / steps)) % 1 + 1) % 1;
+        if (side === this.pit.side && this.pitPhase(t) !== null) {
+          ring = 0;                       // break the ribbon over the pit lane
+          continue;
+        }
+        const f = this.frameAt(t);
+        for (const [out, up] of profile) {
+          const v = f.pos.clone().addScaledVector(f.side, side * (base + out));
+          pos.push(v.x, f.pos.y + up, v.z);
+        }
+        const r = new THREE.Vector3();
+        r.copy(f.pos).addScaledVector(f.side, side * (base + depth * 0.15));
+        roofPos.push(r.x, f.pos.y + top + 4.4, r.z);
+        r.copy(f.pos).addScaledVector(f.side, side * (base + depth + 1.2));
+        roofPos.push(r.x, f.pos.y + top + 5.2, r.z);
+        if (k % 8 === 0) {
+          postAt.push([f.pos.clone().addScaledVector(f.side, side * (base + depth + 1.0)),
+            f.pos.y, Math.atan2(f.tan.x, f.tan.z), top + 5.2]);
+        }
+
+        const rings = pos.length / 3 / rows;
+        if (ring > 0) {
+          const a = (rings - 2) * rows, b = (rings - 1) * rows;
+          for (let j = 0; j < rows - 1; j++) {
+            idx.push(a + j, b + j, a + j + 1, a + j + 1, b + j, b + j + 1);
+          }
+          const rq = roofPos.length / 3 - 4;
+          roofIdx.push(rq, rq + 2, rq + 1, rq + 1, rq + 2, rq + 3);
+        }
+        ring += 1;
+      }
+      if (closed && pos.length === 0) continue;
+
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setIndex(idx);
+      g.computeVertexNormals();
+      const bank = new THREE.Mesh(g, concrete);
+      bank.receiveShadow = true;
+      bank.castShadow = true;
+      this.group.add(bank);
+
+      const rg = new THREE.BufferGeometry();
+      rg.setAttribute('position', new THREE.Float32BufferAttribute(roofPos, 3));
+      rg.setIndex(roofIdx);
+      rg.computeVertexNormals();
+      const roof = new THREE.Mesh(rg, steel);
+      roof.castShadow = true;
+      this.group.add(roof);
+
+      const postGeo = new THREE.BoxGeometry(0.5, 1, 0.5);
+      const posts = new THREE.InstancedMesh(postGeo, steel, postAt.length);
+      const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sv = new THREE.Vector3();
+      postAt.forEach(([at, y, yaw, height], i) => {
+        q.setFromAxisAngle(UP, yaw);
+        sv.set(1, height, 1);
+        m.compose(at.setY(y + height / 2), q, sv);
+        posts.setMatrixAt(i, m);
+      });
+      posts.instanceMatrix.needsUpdate = true;
+      this.group.add(posts);
+
+      this.#seatCrowd(from, length, steps, side, base, TIERS, TREAD, RISE, budget);
+    }
+  }
+
+  // People on the terracing. The seats outnumber the figures the scene can
+  // afford, so each slot is filled at the odds that spends the budget evenly
+  // over the whole gallery instead of packing the first corner.
+  #seatCrowd(from, length, steps, side, base, tiers, tread, rise, budget) {
+    const perRow = Math.max(1, Math.round((this.length * length) / steps / 0.78));
+    const slots = steps * tiers * perRow;
+    const left = Math.max(0, budget - this.crowd.n);
+    const chance = slots > 0 ? left / slots : 0;
+
+    for (let k = 0; k < steps && !this.crowd.full; k++) {
+      const t = ((from + length * (k / steps)) % 1 + 1) % 1;
+      if (side === this.pit.side && this.pitPhase(t) !== null) continue;
+      const f = this.frameAt(t);
+      const yaw = Math.atan2(f.tan.x, f.tan.z);
+      // Facing the track: the road is on the inboard side of the stand.
+      const facing = yaw - (side * Math.PI) / 2;
+      for (let row = 0; row < tiers; row++) {
+        for (let c = 0; c < perRow; c++) {
+          if (Math.random() > chance || this.crowd.n >= budget) continue;
+          const along = ((c + 0.5) / perRow - 0.5) * (this.length * length / steps);
+          const out = base + row * tread + 0.34 + Math.random() * 0.24;
+          const at = f.pos.clone()
+            .addScaledVector(f.side, side * out)
+            .addScaledVector(f.tan, along)
+            .setY(f.pos.y + (row + 1) * rise);
+          if (!this.crowd.add(at, facing + (Math.random() - 0.5) * 0.35)) return;
+        }
+      }
+    }
+  }
+
+  // Four masts of lights over an arena, so it reads as a stadium at any hour.
+  #buildFloodlights() {
+    const mast = new THREE.CylinderGeometry(0.5, 0.85, 34, 8);
+    const steel = new THREE.MeshStandardMaterial({
+      color: 0x2a3140, roughness: 0.5, metalness: 0.7,
+    });
+    this.floodMaterial = new THREE.MeshStandardMaterial({
+      color: 0x0d1220, emissive: 0xfff4d8, emissiveIntensity: 2.6, roughness: 0.3,
+    });
+    const rigGeo = new THREE.BoxGeometry(9, 3.4, 1.2);
+    for (let i = 0; i < 6; i++) {
+      const f = this.frameAt(i / 6);
+      const side = i % 2 === 0 ? -1 : 1;
+      const at = f.pos.clone().addScaledVector(f.side, side * (this.roadHalf + 34));
+      const pole = new THREE.Mesh(mast, steel);
+      pole.position.copy(at).setY(f.pos.y + 17);
+      this.group.add(pole);
+      const rig = new THREE.Mesh(rigGeo, this.floodMaterial);
+      rig.position.copy(at).setY(f.pos.y + 35);
+      rig.rotation.y = Math.atan2(f.tan.x, f.tan.z) + (side * Math.PI) / 2;
+      this.group.add(rig);
+      this.addSolid(at.x, f.pos.y, at.z, 1.2, 34);
+    }
   }
 
   // Cattle and sheep, grazing well back from the lane.
@@ -843,6 +1207,11 @@ export class Track {
       transparent: true, opacity: 0.82,
     });
     this.group.add(new THREE.Mesh(geo, this.waterMaterial));
+  }
+
+  // The crowd is the only thing on a circuit that moves on its own.
+  update(dt, cheer = 0.25) {
+    this.crowd?.update(dt, cheer);
   }
 
   // Minimap needs a flat polyline in track space.
