@@ -38,7 +38,9 @@ room and player count. Over HTTPS the client automatically opens a secure
 Optional environment variables:
 
 - `APEX_CODE` — require a join code. Worth setting for a public deployment.
-- `APEX_PUBLIC` — an address to print in the startup banner.
+- `APEX_PUBLIC` — an address to print in the startup banner. It is also used as
+  the canonical origin in the social share tags; without it the tags follow the
+  address each request arrives on.
 
 ## Invite links
 

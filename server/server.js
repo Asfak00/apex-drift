@@ -21,8 +21,22 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
   '.ico': 'image/x-icon',
 };
+
+// The share tags in index.html need absolute URLs, and the address the game is
+// reached on is only known per request: a LAN IP, a Fly or Render hostname, or
+// a custom domain. The proxy headers are only trusted when APEX_PUBLIC is unset.
+function originOf(req) {
+  if (PUBLIC) return PUBLIC.startsWith('http') ? PUBLIC.replace(/\/$/, '') : `http://${PUBLIC}:${PORT}`;
+  const forwarded = req.headers['x-forwarded-proto'];
+  const proto = (Array.isArray(forwarded) ? forwarded[0] : forwarded ?? 'http').split(',')[0].trim();
+  const host = req.headers.host ?? `localhost:${PORT}`;
+  return `${proto}://${host}`;
+}
 
 // Only files inside the project are servable; anything resolving outside is a 403.
 async function serveStatic(req, res) {
@@ -41,9 +55,12 @@ async function serveStatic(req, res) {
     return;
   }
   try {
-    const body = await readFile(file);
+    const ext = path.extname(file);
+    let body = await readFile(file);
+    // index.html carries %ORIGIN% placeholders in its share tags.
+    if (ext === '.html') body = body.toString('utf8').replaceAll('%ORIGIN%', originOf(req));
     res.writeHead(200, {
-      'content-type': MIME[path.extname(file)] ?? 'application/octet-stream',
+      'content-type': MIME[ext] ?? 'application/octet-stream',
       'cache-control': 'no-cache',
     }).end(body);
   } catch {
