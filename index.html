@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Apex Drift</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2305080f'/%3E%3Cpath d='M32 10 L54 56 H41 L32 34 L23 56 H10 Z' fill='%234de3b0'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.171.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.171.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <canvas id="scene"></canvas>
+
+  <div id="hud" hidden>
+    <div class="hud-corner tl">
+      <div class="panel">
+        <div class="row"><span class="k">LAP</span><span class="v" id="lap">1/3</span></div>
+        <div class="row"><span class="k">POS</span><span class="v" id="pos">1/4</span></div>
+      </div>
+      <div class="panel times">
+        <div class="row"><span class="k">TIME</span><span class="v mono" id="time">0:00.00</span></div>
+        <div class="row"><span class="k">LAST</span><span class="v mono dim" id="last">--:--.--</span></div>
+        <div class="row"><span class="k">BEST</span><span class="v mono accent" id="best">--:--.--</span></div>
+      </div>
+    </div>
+
+    <div class="hud-corner tl-low">
+      <div class="panel gaps">
+        <div class="row"><span class="k">AHEAD</span><span class="v sm" id="gap-ahead">&mdash;</span></div>
+        <div class="row"><span class="k">BEHIND</span><span class="v sm" id="gap-behind">&mdash;</span></div>
+      </div>
+    </div>
+
+    <div class="hud-corner tr">
+      <canvas id="minimap" width="200" height="200"></canvas>
+      <div class="panel env">
+        <div class="row"><span class="k">TRACK</span><span class="v" id="track-name">Apex Ring</span></div>
+        <div class="row"><span class="k">SKY</span><span class="v" id="vision-name">Day</span></div>
+        <div class="row"><span class="k">WX</span><span class="v" id="weather-name">Clear</span></div>
+        <div class="row"><span class="k">GRIP</span><span class="v" id="grip">100%</span></div>
+      </div>
+    </div>
+
+    <div class="hud-corner br">
+      <div class="gauge">
+        <svg viewBox="0 0 240 164" id="gauge-svg" aria-hidden="true">
+          <path class="gauge-track" d="M38 132 A 82 82 0 0 1 202 132" />
+          <path class="gauge-fill" id="gauge-fill" d="M38 132 A 82 82 0 0 1 202 132" />
+          <g id="gauge-ticks"></g>
+          <line class="gauge-needle" id="needle" x1="120" y1="132" x2="120" y2="62" />
+          <circle class="gauge-hub" cx="120" cy="132" r="6" />
+        </svg>
+        <div class="readout">
+          <span class="speed mono" id="speed">0</span>
+          <span class="unit">KM/H</span>
+          <span class="gear-badge mono" id="gear">N</span>
+        </div>
+        <button class="boost-btn" id="boost-btn" type="button">
+          <span class="bolt">&#9889;</span> BOOST <kbd class="boost-key">Shift</kbd>
+        </button>
+        <div class="boost" id="boost">
+          <span class="boost-label">BOOST</span>
+          <span class="boost-track"><span class="boost-fill" id="boost-fill"></span></span>
+          <span class="boost-charges mono" id="boost-charges">10</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast"></div>
+    <div id="notes" class="notes"></div>
+  </div>
+
+  <div id="touch" class="touch" hidden>
+    <div class="steer" id="steer-pad">
+      <span class="steer-track"></span>
+      <span class="steer-knob" id="steer-knob">
+        <svg viewBox="0 0 48 48" aria-hidden="true">
+          <circle cx="24" cy="24" r="17" fill="none" stroke="currentColor" stroke-width="3.5"/>
+          <path d="M7 24h34M24 24v15" stroke="currentColor" stroke-width="3.5"
+                stroke-linecap="round"/>
+        </svg>
+      </span>
+      <span class="steer-hint">DRAG TO STEER</span>
+    </div>
+
+    <div class="pedals">
+      <div class="pedal-row">
+        <button class="mini" id="pedal-hand" aria-label="Handbrake">HAND</button>
+        <button class="mini boost" id="pedal-boost" aria-label="Boost">BOOST</button>
+      </div>
+      <button class="pedal brake" id="pedal-brake" aria-label="Brake">BRAKE</button>
+      <button class="pedal gas" id="pedal-gas" aria-label="Throttle">GAS</button>
+    </div>
+
+    <div class="touch-top">
+      <button class="mini" id="touch-camera" aria-label="Change camera">CAM</button>
+      <button class="mini" id="touch-menu" aria-label="Back to menu">MENU</button>
+    </div>
+  </div>
+
+  <div id="menu" class="stage">
+    <header class="stage-head">
+      <div id="logo"></div>
+      <p class="stage-now" id="stage-now"></p>
+    </header>
+
+    <aside class="panel-card">
+      <div class="panel-top">
+        <span class="panel-title">Race setup</span>
+        <button class="icon-btn" id="open-settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3.1"/>
+            <path d="M19.5 14.6l1.9 1.5-1.9 3.3-2.3-.9a8 8 0 0 1-2.2 1.3l-.3 2.4h-3.4l-.3-2.4a8 8 0 0 1-2.2-1.3l-2.3.9-1.9-3.3 1.9-1.5a8 8 0 0 1 0-2.6L2.6 10.5l1.9-3.3 2.3.9a8 8 0 0 1 2.2-1.3l.3-2.4h3.4l.3 2.4a8 8 0 0 1 2.2 1.3l2.3-.9 1.9 3.3-1.9 1.5a8 8 0 0 1 0 2.6z"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="setup">
+        <div class="field">
+          <label>Mode</label>
+          <div class="opts" id="pick-mode"></div>
+        </div>
+        <div class="field">
+          <label>Car</label>
+          <div class="opts" id="pick-chassis"></div>
+        </div>
+        <div class="field">
+          <label>Circuit</label>
+          <div class="opts" id="pick-track"></div>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label>Vision</label>
+            <div class="opts" id="pick-vision"></div>
+          </div>
+          <div class="field">
+            <label>Weather</label>
+            <div class="opts" id="pick-weather"></div>
+          </div>
+        </div>
+        <p class="hint" id="hint"></p>
+      </div>
+
+      <div class="actions">
+        <button id="start">DROP THE FLAG</button>
+        <button id="join" class="ghost">RACE ON THIS NETWORK</button>
+      </div>
+    </aside>
+
+    <section class="career" id="career">
+      <div class="tiles" id="career-tiles"></div>
+      <div class="badges" id="career-badges"></div>
+    </section>
+  </div>
+
+  <div id="wizard" class="sheet" hidden>
+    <div class="sheet-card">
+      <div class="sheet-head">
+        <span class="steps" id="wizard-steps"></span>
+        <button class="icon-btn" id="wizard-close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+
+      <section class="step" data-step="name">
+        <h3>Who is driving?</h3>
+        <p class="sheet-sub">This is the name the other drivers will see on track.</p>
+        <input id="name" type="text" maxlength="14" autocomplete="off"
+               spellcheck="false" placeholder="Type your name" />
+      </section>
+
+      <section class="step" data-step="car" hidden>
+        <h3>Pick your car</h3>
+        <p class="sheet-sub">Everyone chooses their own. The circuit and the weather are shared.</p>
+        <div class="opts" id="wizard-chassis"></div>
+        <p class="hint" id="wizard-car-hint"></p>
+      </section>
+
+      <section class="step" data-step="connect" hidden>
+        <h3>Join the race</h3>
+        <p class="sheet-sub">Leave the code empty unless the host set one.</p>
+        <input id="code" class="code-field" type="text" maxlength="24" autocomplete="off"
+               spellcheck="false" placeholder="Join code (optional)" />
+        <p class="hint tight" id="lan-url"></p>
+      </section>
+
+      <section class="step" data-step="lobby" hidden>
+        <div class="lan-head">
+          <h3>Lobby</h3>
+          <span id="lan-state" class="lan-state">connecting&hellip;</span>
+        </div>
+        <ul id="players" class="players"></ul>
+
+        <div class="invite">
+          <label>Invite link</label>
+          <div class="invite-row">
+            <input id="invite-link" type="text" readonly />
+            <button id="copy-invite" class="mini-btn" type="button">COPY</button>
+          </div>
+          <div class="invite-actions">
+            <span class="room-code">Room <b id="room-code">MAIN</b></span>
+            <button id="new-room" class="linkish" type="button">New private room</button>
+          </div>
+        </div>
+
+        <p class="hint tight">Anyone who opens that link lands straight in this room. Any driver
+          can start; the countdown runs on the server, so every screen drops the flag together.</p>
+      </section>
+
+      <div class="sheet-actions">
+        <button id="wizard-back" class="ghost">BACK</button>
+        <button id="wizard-next">NEXT</button>
+        <button id="ready" class="ghost" hidden>READY</button>
+        <button id="go" hidden>START RACE</button>
+        <button id="leave" class="ghost" hidden>LEAVE</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="settings" class="sheet" hidden>
+    <div class="sheet-card">
+      <div class="sheet-head">
+        <h3>Settings</h3>
+        <button class="icon-btn" id="settings-close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab" data-tab="audio" aria-selected="true">Audio</button>
+        <button class="tab" data-tab="display" aria-selected="false">Display</button>
+        <button class="tab" data-tab="controls" aria-selected="false">Controls</button>
+      </div>
+
+      <section class="tab-panel" data-panel="audio">
+        <label class="row-set">
+          <span>Sound</span>
+          <input type="checkbox" id="set-sound" class="switch" checked />
+        </label>
+        <label class="row-set">
+          <span>Music</span>
+          <input type="range" id="set-music" min="0" max="100" value="100" />
+        </label>
+        <label class="row-set">
+          <span>Effects</span>
+          <input type="range" id="set-sfx" min="0" max="100" value="100" />
+        </label>
+      </section>
+
+      <section class="tab-panel" data-panel="display" hidden>
+        <label class="row-set">
+          <span>Quality</span>
+          <select id="set-quality">
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+        <label class="row-set">
+          <span>Shadows</span>
+          <input type="checkbox" id="set-shadows" class="switch" checked />
+        </label>
+        <label class="row-set">
+          <span>Default camera</span>
+          <select id="set-camera">
+            <option value="chase" selected>Chase</option>
+            <option value="hood">Hood</option>
+            <option value="cinematic">Cinematic</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="tab-panel" data-panel="controls" hidden>
+        <label class="row-set">
+          <span>On-screen controls</span>
+          <select id="set-touch">
+            <option value="auto" selected>Auto</option>
+            <option value="on">Always on</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <label class="row-set">
+          <span>Steering sensitivity</span>
+          <input type="range" id="set-steering" min="50" max="150" value="100" />
+        </label>
+        <p class="hint tight">Keys: WASD drive, Shift boost, Space handbrake,
+          C camera, V vision, B weather, M sound, R respawn, Esc menu.</p>
+      </section>
+    </div>
+  </div>
+
+  <div id="results" hidden>
+    <div class="menu-card board">
+      <div class="confetti" id="confetti" hidden></div>
+      <p class="board-eyebrow" id="result-eyebrow">RACE COMPLETE</p>
+      <h2 id="result-title">FINISHED</h2>
+      <p class="board-sub" id="result-sub"></p>
+      <ol class="board-rows" id="result-body"></ol>
+      <div class="purse" id="result-purse" hidden></div>
+      <button id="again">RUN IT BACK</button>
+    </div>
+  </div>
+
+  <div id="loading">building circuit&hellip;</div>
+</div>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

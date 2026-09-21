@@ -1,0 +1,15 @@
+# Render: connect the repository, and this file configures the service.
+# The free plan supports WebSockets. It sleeps after inactivity, so the first
+# visit after a quiet spell takes a few seconds to wake.
+services:
+  - type: web
+    name: apex-drift
+    runtime: node
+    plan: free
+    buildCommand: npm ci --omit=dev
+    startCommand: node server/server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Set APEX_CODE in the dashboard if the server should ask for a join code.
