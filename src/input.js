@@ -28,6 +28,7 @@ const ACTION_KEYS = {
   KeyR: 'respawn',
   Escape: 'menu',
   KeyM: 'sound',
+  F3: 'debug',
 };
 
 export class Input {

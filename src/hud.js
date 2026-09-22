@@ -125,12 +125,24 @@ export class Hud {
       i ? c.lineTo(x, y) : c.moveTo(x, y);
     }
     c.closePath();
-    c.strokeStyle = 'rgba(160,190,225,.32)';
-    c.lineWidth = 8;
+    // The circuit reads as a dark ribbon with a crimson edge, so the white
+    // player marker is the brightest thing on the map.
+    c.strokeStyle = 'rgba(232,236,244,.10)';
+    c.lineWidth = 9;
     c.stroke();
-    c.strokeStyle = 'rgba(200,225,255,.16)';
-    c.lineWidth = 1.5;
+    c.strokeStyle = 'rgba(224,27,36,.62)';
+    c.lineWidth = 1.6;
     c.stroke();
+
+    // Direction of travel, marked once at the start line.
+    const [sx, sy] = this.#toMap(this.outline[0][0], this.outline[0][1]);
+    const [nx, ny] = this.#toMap(this.outline[1][0], this.outline[1][1]);
+    c.save();
+    c.translate(sx, sy);
+    c.rotate(Math.atan2(ny - sy, nx - sx));
+    c.fillStyle = 'rgba(255,58,63,.9)';
+    c.fillRect(-1, -5, 2, 10);
+    c.restore();
 
     const dot = (car, color, r) => {
       const [x, y] = this.#toMap(car.position.x, car.position.z);
@@ -153,8 +165,11 @@ export class Hud {
     c.beginPath();
     c.moveTo(0, -6); c.lineTo(4.5, 5); c.lineTo(0, 2.5); c.lineTo(-4.5, 5);
     c.closePath();
-    c.fillStyle = '#4de3b0';
+    c.fillStyle = '#ffffff';
     c.fill();
+    c.strokeStyle = 'rgba(224,27,36,.9)';
+    c.lineWidth = 1.4;
+    c.stroke();
     c.restore();
   }
 
@@ -196,7 +211,7 @@ export class Hud {
     this.el.tyreBadge.style.background = hex;
     this.el.tyreLife.textContent = `${Math.round(life * 100)}%`;
     this.el.tyreFill.style.width = `${life * 100}%`;
-    this.el.tyreFill.style.background = life < 0.14 ? '#ff5f5f' : life < 0.32 ? '#ffc94d' : hex;
+    this.el.tyreFill.style.background = life < 0.14 ? '#ff3a3f' : life < 0.32 ? '#ffc94d' : hex;
     this.el.tyres.classList.toggle('worn', life < 0.32);
     this.el.tyres.classList.toggle('shot', life < 0.14);
 
@@ -231,7 +246,9 @@ export class Hud {
     const frac = Math.min(1, kmh / MAX_KMH);
     this.el.needle.setAttribute('transform', `rotate(${-90 + frac * 180} 120 132)`);
     this.el.gaugeFill.style.strokeDashoffset = this.gaugeLen * (1 - frac);
-    this.el.gaugeFill.style.stroke = kmh > 240 ? '#ff5f5f' : kmh > 170 ? '#ffc94d' : '#4de3b0';
+    // The sweep runs white through the usable range and turns crimson at the
+    // top end, which is the one place the driver needs to be told.
+    this.el.gaugeFill.style.stroke = kmh > 240 ? '#ff3a3f' : kmh > 170 ? '#ffc94d' : '#dfe4ec';
 
     const boost = player.boost ?? { reserve: 0, capacity: 1, firing: false };
     const left = Math.max(0, Math.min(1, boost.reserve / boost.capacity));
@@ -255,7 +272,7 @@ export class Hud {
     const surfaceGrip = surface?.grip ?? 1;
     const grip = Math.round(env.grip * surfaceGrip * (player.onRoad ? 1 : 0.55) * 100);
     this.el.grip.textContent = `${grip}%`;
-    this.el.grip.style.color = grip < 60 ? '#ff5f5f' : grip < 85 ? '#ffc94d' : '#4de3b0';
+    this.el.grip.style.color = grip < 60 ? '#ff3a3f' : grip < 85 ? '#ffc94d' : '#3ddc97';
     if (surface) this.el.track.textContent = surface.name;
     this.el.vision.textContent = env.vision.name;
     this.el.weather.textContent = env.weather.name;

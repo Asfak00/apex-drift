@@ -1,5 +1,6 @@
 import { MODES, VISIONS, WEATHERS, CHASSIS, TRACKS, CAMERAS } from './config.js';
 import { Game } from './game.js';
+import { storedLevel } from './audio.js';
 import { formatTime } from './hud.js';
 import { Net } from './net.js';
 import {
@@ -7,6 +8,7 @@ import {
 } from './ui-icons.js';
 import { renderChassisThumbs } from './car-thumbs.js';
 import { makeCode, normaliseCode, DEFAULT_ROOM } from './room-code.js';
+import { Boot } from './boot.js';
 
 const $ = (id) => document.getElementById(id);
 const menu = $('menu');
@@ -57,14 +59,18 @@ nameInput.addEventListener('input', () => localStorage.setItem('apex.name', name
 const driverName = () => nameInput.value.trim() || 'Racer';
 
 $('logo').innerHTML = LOGO;
+$('boot-logo').innerHTML = LOGO;
 
 // Real renders of the real meshes, made once at start-up. If the throwaway
-// context cannot be created, the drawn silhouettes still carry the picker.
+// context cannot be created, the drawn silhouettes still carry the picker, so
+// a failure here costs the pictures and nothing else.
 let carThumbs = {};
-try {
-  carThumbs = renderChassisThumbs();
-} catch (err) {
-  console.warn('car previews unavailable, using drawn icons', err);
+function loadThumbs() {
+  try {
+    carThumbs = renderChassisThumbs();
+  } catch (err) {
+    console.warn('car previews unavailable, using drawn icons', err);
+  }
 }
 const carCard = (key, chassis) => (carThumbs[key]
   ? `<img class="opt-shot" src="${carThumbs[key]}" alt="" />`
@@ -87,6 +93,11 @@ function segment(hostId, table, field, iconFor, onPick) {
     b.addEventListener('click', () => {
       choice[field] = key;
       paintField(field, key);
+      // A selection is confirmed by sound as well as by the panel lighting up.
+      game.audio.start();
+      game.audio.resume();
+      if (field === 'chassis') game.audio.rev(value.engine);
+      else game.audio.click(field === 'track');
       onPick?.(key, value);
       refreshPreview();
       // In a lobby the conditions are shared, so a pick is an announcement.
@@ -107,6 +118,125 @@ function paintField(field, key) {
       b.setAttribute('aria-pressed', String(b.dataset.key === key));
     }
   }
+}
+
+// --- navigation ----------------------------------------------------------
+// The rail decides which part of the setup the panel is showing. Two of its
+// entries are doors rather than views: multiplayer opens the join flow, and
+// settings opens the settings sheet.
+const VIEWS = ['race', 'garage', 'tracks', 'career'];
+let view = 'race';
+
+function setView(next) {
+  if (next === 'network') { openWizard(); return; }
+  if (next === 'settings') { openSettings(); return; }
+  if (!VIEWS.includes(next)) return;
+  view = next;
+  for (const btn of $('rail').children) {
+    btn.setAttribute('aria-pressed', String(btn.dataset.view === next));
+  }
+  for (const el of document.querySelectorAll('.setup [data-view]')) {
+    el.hidden = el.dataset.view !== next;
+  }
+  if (next === 'career') renderCareer();
+  // The garage is the studio; everywhere else stands the car on the circuit
+  // under the conditions that are selected, so a change to the weather or the
+  // time of day is something the player watches happen.
+  refreshPreview();
+  renderSpec();
+}
+
+// What the bottom of the stage is showing: the car in the garage, the circuit
+// under Tracks, the race under Race. Every figure comes from the same data the
+// race itself runs on.
+function renderSpec() {
+  if (view === 'tracks') return renderTrackSpec();
+  if (view === 'race') return renderRaceSpec();
+  return renderCarSpec();
+}
+
+// Bars as a share of the best car in the game at that one thing, so a full bar
+// means "nothing here does this better".
+const BEST = Object.values(CHASSIS).reduce((acc, c) => ({
+  speed: Math.max(acc.speed, c.drive.power / c.drive.mass),
+  accel: Math.max(acc.accel, (c.drive.power * c.drive.grip) / c.drive.mass),
+  grip: Math.max(acc.grip, c.drive.grip),
+  steer: Math.max(acc.steer, c.drive.steer),
+  brake: Math.max(acc.brake, c.drive.brake),
+}), { speed: 0, accel: 0, grip: 0, steer: 0, brake: 0 });
+
+function paintSpec({ name, tag, bars, blurb }) {
+  $('spec-name').textContent = name;
+  $('spec-class').textContent = tag;
+  $('spec-blurb').textContent = blurb ?? '';
+  $('spec-bars').replaceChildren(...bars.map(([label, value, shown]) => {
+    const el = document.createElement('div');
+    el.className = 'spec-bar';
+    el.innerHTML = `<span>${label}</span>`
+      + (value === null
+        ? `<b class="spec-figure">${shown}</b>`
+        : `<i><b></b></i>`);
+    if (value !== null) {
+      requestAnimationFrame(() => {
+        el.querySelector('i b').style.width = `${Math.round(Math.min(1, value) * 100)}%`;
+      });
+    }
+    return el;
+  }));
+}
+
+function renderCarSpec() {
+  const chassis = CHASSIS[choice.chassis];
+  const d = chassis.drive;
+  paintSpec({
+    name: chassis.name,
+    tag: chassis.category,
+    blurb: chassis.blurb,
+    bars: [
+      ['Top speed', (d.power / d.mass) / BEST.speed],
+      ['Accel', ((d.power * d.grip) / d.mass) / BEST.accel],
+      ['Handling', d.grip / BEST.grip],
+      ['Drift', d.steer / BEST.steer],
+      ['Braking', d.brake / BEST.brake],
+    ],
+  });
+}
+
+// Length and corner count are measured from the built circuit, not written
+// down beside it, so they cannot drift out of step with the track itself.
+function renderTrackSpec() {
+  const spec = TRACKS[choice.track];
+  const built = game.track?.spec === spec ? game.track : null;
+  const km = built ? (built.length / 1000).toFixed(2) : '—';
+  const corners = built ? built.corners() : '—';
+  paintSpec({
+    name: spec.name,
+    tag: `${spec.surface} · ${spec.barriers ?? 'armco'} barriers`,
+    blurb: spec.blurb,
+    bars: [
+      ['Length', null, `${km} km`],
+      ['Corners', null, String(corners)],
+      ['Grip', null, `${Math.round(spec.grip * 100)}%`],
+      ['Laps', null, String(MODES[choice.mode].laps || '—')],
+    ],
+  });
+}
+
+function renderRaceSpec() {
+  const mode = MODES[choice.mode];
+  const bars = [
+    ['Laps', null, String(mode.laps || '—')],
+    ['Rivals', null, String(mode.rivals)],
+    ['Tyre wear', null, mode.tyres ? 'ON' : 'OFF'],
+    ['Pit stops', null, mode.pit ? 'REQUIRED' : 'NO'],
+  ];
+  paintSpec({
+    name: mode.name,
+    tag: `${TRACKS[choice.track].name} · ${VISIONS[choice.vision].name}`
+      + ` · ${WEATHERS[choice.weather].name}`,
+    blurb: mode.hint,
+    bars,
+  });
 }
 
 // The career panel: what the driver has, and what they have done.
@@ -142,7 +272,9 @@ let previewPending = 0;
 function refreshPreview() {
   clearTimeout(previewPending);
   previewPending = setTimeout(() => {
-    if (!menu.hidden) game.preview(choice);
+    // Garage means the studio; every other view is about the circuit, so the
+    // car stands on it under the conditions that are selected.
+    if (!menu.hidden) game.preview(choice, { style: view === 'garage' ? 'studio' : 'circuit' });
     $('stage-now').innerHTML =
       `<b>${CHASSIS[choice.chassis].name}</b> on <b>${TRACKS[choice.track].name}</b>`
       + ` &middot; ${VISIONS[choice.vision].name} &middot; ${WEATHERS[choice.weather].name}`;
@@ -151,17 +283,23 @@ function refreshPreview() {
 
 // One hint line for the whole form: it describes whatever was touched last,
 // which keeps the panel short enough that the buttons stay on screen.
-const describe = (_, value) => { $('hint').textContent = value.hint ?? value.blurb ?? ''; };
-segment('pick-mode', MODES, 'mode', (k) => MODE_ICONS[k], describe);
-segment('pick-chassis', CHASSIS, 'chassis', (k, v) => carCard(k, v), describe);
-segment('pick-track', TRACKS, 'track', (_, v) => circuitIcon(v), describe);
-segment('pick-vision', VISIONS, 'vision', (_, v) => visionSwatch(v), describe);
-segment('pick-weather', WEATHERS, 'weather', (_, v) => weatherSwatch(v), describe);
-// The same car picker, shown again inside the multiplayer flow.
-segment('wizard-chassis', CHASSIS, 'chassis', (k, v) => carCard(k, v),
-  (_, v) => { $('wizard-car-hint').textContent = v.blurb; });
-$('hint').textContent = TRACKS[choice.track].blurb;
-$('wizard-car-hint').textContent = CHASSIS[choice.chassis].blurb;
+const describe = (_, value) => {
+  $('hint').textContent = value.hint ?? value.blurb ?? '';
+  renderSpec();
+};
+const describeCar = (key, value) => describe(key, value);
+function buildPickers() {
+  segment('pick-mode', MODES, 'mode', (k) => MODE_ICONS[k], describe);
+  segment('pick-chassis', CHASSIS, 'chassis', (k, v) => carCard(k, v), describeCar);
+  segment('pick-track', TRACKS, 'track', (_, v) => circuitIcon(v), describe);
+  segment('pick-vision', VISIONS, 'vision', (_, v) => visionSwatch(v), describe);
+  segment('pick-weather', WEATHERS, 'weather', (_, v) => weatherSwatch(v), describe);
+  // The same car picker, shown again inside the multiplayer flow.
+  segment('wizard-chassis', CHASSIS, 'chassis', (k, v) => carCard(k, v),
+    (_, v) => { $('wizard-car-hint').textContent = v.blurb; });
+  $('hint').textContent = TRACKS[choice.track].blurb;
+  $('wizard-car-hint').textContent = CHASSIS[choice.chassis].blurb;
+}
 
 // --- game ----------------------------------------------------------------
 // One scoreboard for solo and for the network: rows stagger in, the winner
@@ -229,7 +367,9 @@ function renderBoard({ eyebrow, title, sub, table, payout }) {
   const won = table.some((r) => r.you && r.place === 1);
   confetti.hidden = !won;
   if (won) {
-    const colours = ['#4de3b0', '#ffc94d', '#6f9cff', '#ff5f5f', '#8ef26a'];
+    // Team colours: crimson, white and a little gold. Anything else on this
+    // screen belongs to another game.
+    const colours = ['#ff3a3f', '#ffffff', '#e01b24', '#ffc94d', '#c9ced6'];
     for (let i = 0; i < 26; i++) {
       const bit = document.createElement('i');
       bit.style.left = `${Math.random() * 100}%`;
@@ -242,18 +382,25 @@ function renderBoard({ eyebrow, title, sub, table, payout }) {
   results.hidden = false;
 }
 
-const game = new Game($('scene'), {
-  onExit: showMenu,
-  onFinish: (r) => {
-    renderBoard({
-      eyebrow: `${r.mode} · ${r.track} · ${r.vision} / ${r.weather}`,
-      title: r.entries > 1 ? `P${r.place} of ${r.entries}` : 'Time trial complete',
-      sub: r.best ? `Your best lap ${formatTime(r.best)}` : '',
-      table: r.table,
-      payout: r.payout,
-    });
-  },
-});
+// Built by the boot sequence, which is also what the player is watching while
+// it happens. Everything below refers to it from inside a callback, so it is
+// only ever read once the sequence has made it.
+let game = null;
+
+function buildGame() {
+  return new Game($('scene'), {
+    onExit: showMenu,
+    onFinish: (r) => {
+      renderBoard({
+        eyebrow: `${r.mode} · ${r.track} · ${r.vision} / ${r.weather}`,
+        title: r.entries > 1 ? `P${r.place} of ${r.entries}` : 'Time trial complete',
+        sub: r.best ? `Your best lap ${formatTime(r.best)}` : '',
+        table: r.table,
+        payout: r.payout,
+      });
+    },
+  });
+}
 
 function showMenu() {
   menu.hidden = false;
@@ -272,6 +419,20 @@ function launch() {
 }
 
 $('start').addEventListener('click', launch);
+for (const btn of $('rail').children) {
+  btn.addEventListener('click', () => setView(btn.dataset.view));
+}
+
+// Enter drops the flag from the home screen, which is what the hint on the
+// button says it does.
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || menu.hidden) return;
+  if (!$('wizard').hidden || !$('settings').hidden) return;
+  const tag = e.target?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON') return;
+  e.preventDefault();
+  launch();
+});
 
 // --- multiplayer, one question at a time ---------------------------------
 // The home screen is about the race. Everything personal — who you are, which
@@ -421,10 +582,23 @@ $('again').addEventListener('click', () => {
 });
 
 // --- settings -------------------------------------------------------------
+// The mixer: one fader per family of sound, stored where the audio engine
+// already looks for them so the panel and the mix can never disagree.
+const MIX = [
+  ['set-master', 'master'], ['set-engine', 'engine'], ['set-tyres', 'tyres'],
+  ['set-env', 'env'], ['set-music', 'music'], ['set-sfx', 'sfx'], ['set-ui', 'ui'],
+];
+const level = (key, fallback = 1) => storedLevel(key, fallback);
+
 const settings = {
   sound: localStorage.getItem('apex.sound') !== 'off',
-  music: Number(localStorage.getItem('apex.music') ?? 1),
-  sfx: Number(localStorage.getItem('apex.sfx') ?? 1),
+  master: level('master'),
+  engine: level('engine'),
+  tyres: level('tyres'),
+  env: level('env'),
+  music: level('music', Number(localStorage.getItem('apex.music') ?? 1)),
+  sfx: level('sfx', Number(localStorage.getItem('apex.sfx') ?? 1)),
+  ui: level('ui'),
   quality: localStorage.getItem('apex.quality') ?? 'medium',
   shadows: localStorage.getItem('apex.shadows') !== 'off',
   camera: localStorage.getItem('apex.camera') ?? 'chase',
@@ -434,13 +608,16 @@ const settings = {
 
 function pushSettings() {
   game.audio.setEnabled(settings.sound);
-  game.audio.setMusicLevel(settings.music);
-  game.audio.setSfxLevel(settings.sfx);
+  game.audio.setMasterLevel(settings.master);
+  for (const [, key] of MIX) {
+    if (key !== 'master') game.audio.setLevel(key, settings[key]);
+  }
   game.applySettings(settings);
   game.cameraMode = Math.max(0, CAMERAS.indexOf(settings.camera));
 }
 
-$('open-settings').addEventListener('click', () => { $('settings').hidden = false; });
+function openSettings() { $('settings').hidden = false; }
+$('open-settings').addEventListener('click', openSettings);
 $('settings-close').addEventListener('click', () => { $('settings').hidden = true; });
 
 for (const tab of document.querySelectorAll('.tab')) {
@@ -477,8 +654,7 @@ function bind(id, key, read, store = (v) => String(v)) {
 }
 
 $('set-sound').checked = settings.sound;
-$('set-music').value = String(Math.round(settings.music * 100));
-$('set-sfx').value = String(Math.round(settings.sfx * 100));
+for (const [id, key] of MIX) $(id).value = String(Math.round(settings[key] * 100));
 $('set-quality').value = settings.quality;
 $('set-shadows').checked = settings.shadows;
 $('set-camera').value = settings.camera;
@@ -487,8 +663,16 @@ $('set-steering').value = String(Math.round(settings.steering * 100));
 for (const range of document.querySelectorAll('input[type="range"]')) paintRange(range);
 
 bind('set-sound', 'sound', (el) => el.checked, (v) => (v ? 'on' : 'off'));
-bind('set-music', 'music', (el) => Number(el.value) / 100);
-bind('set-sfx', 'sfx', (el) => Number(el.value) / 100);
+// Faders are stored by the audio engine itself, so the generic binder must not
+// also write them under a different key.
+for (const [id, key] of MIX) {
+  const el = $(id);
+  el.addEventListener('input', () => {
+    paintRange(el);
+    settings[key] = Number(el.value) / 100;
+    pushSettings();
+  });
+}
 bind('set-quality', 'quality', (el) => el.value);
 bind('set-shadows', 'shadows', (el) => el.checked, (v) => (v ? 'on' : 'off'));
 bind('set-camera', 'camera', (el) => el.value);
@@ -535,18 +719,46 @@ net.on('offline', () => {
   lanState.classList.add('bad');
 });
 
-$('loading').hidden = true;
-showInvite();
-renderCareer();
-paintWizard();
-pushSettings();
-refreshPreview();
+// --- boot -----------------------------------------------------------------
+// Each step reports in as it finishes, so the bar on the loading screen is the
+// share of the work that is really done. The order is the order the game needs
+// them in: the pictures for the pickers, the circuit and the car, then the
+// scene they stand in, then the mixer.
+const boot = new Boot();
 
-// Debug handle: the game has no build step, so expose the instance for probing
-// from the browser console (state, car position, env presets).
-window.game = game;
+async function start() {
+  // Getting here at all means the module and Three.js have loaded.
+  boot.finished('engine');
+  await boot.run('physics', () => {
+    showInvite();
+    paintWizard();
+  });
+  await boot.run('vehicle', () => {
+    loadThumbs();
+    buildPickers();
+  });
+  game = await boot.run('track', () => buildGame());
+  window.game = game;
+  // From here the loading screen is showing the real car in the real studio.
+  boot.attach(game);
+  await boot.run('environment', () => {
+    game.preview(choice, { style: 'studio' });
+    renderCareer();
+    setView('race');
+  });
+  await boot.run('audio', () => pushSettings());
+
+  await boot.finish();
+  $('loading').hidden = true;
+  refreshPreview();
+  // An invite link means the intent is already "join this race", so the flow
+  // opens at the name step instead of making them find the button.
+  if (new URLSearchParams(location.search).has('room')) openWizard();
+}
+
+start().catch((error) => boot.fail(error));
+
+// Debug handle: the game has no build step, so expose the instances for
+// probing from the browser console (state, car position, env presets).
 window.net = net;
-
-// Arriving on an invite link means the intent is already "join this race", so
-// the flow opens at the name step instead of making them find the button.
-if (new URLSearchParams(location.search).has('room')) openWizard();
+window.boot = boot;

@@ -254,7 +254,7 @@ export function circuitIcon(spec) {
   c.setLineDash([]);
 
   const [sx, sy] = at(points[0]);
-  c.fillStyle = '#4de3b0';
+  c.fillStyle = '#ff3a3f';
   c.beginPath();
   c.arc(sx, sy, 4, 0, Math.PI * 2);
   c.fill();
@@ -268,12 +268,12 @@ export const LOGO = `
 <svg viewBox="0 0 320 78" class="logo" role="img" aria-label="Apex Drift">
   <defs>
     <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#4de3b0"/><stop offset="1" stop-color="#8ef26a"/>
+      <stop offset="0" stop-color="#ff3a3f"/><stop offset="1" stop-color="#7d0d13"/>
     </linearGradient>
   </defs>
   <g transform="translate(4 6)">
     <path d="M33 4 L60 62 H44 L33 36 L22 62 H6 Z" fill="url(#lg)"/>
-    <path d="M33 22 L44 48 H22 Z" fill="#05080f" opacity=".85"/>
+    <path d="M33 22 L44 48 H22 Z" fill="#0a0b0d" opacity=".88"/>
     <path d="M2 50a34 34 0 0 1 62-20" fill="none" stroke="url(#lg)"
       stroke-width="3.5" stroke-linecap="round" opacity=".55"/>
   </g>

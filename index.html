@@ -154,6 +154,26 @@
       <p class="stage-now" id="stage-now"></p>
     </header>
 
+    <nav class="rail" id="rail" aria-label="Main menu">
+      <button type="button" class="rail-btn" data-view="race" aria-pressed="true">Race</button>
+      <button type="button" class="rail-btn" data-view="garage" aria-pressed="false">Garage</button>
+      <button type="button" class="rail-btn" data-view="tracks" aria-pressed="false">Tracks</button>
+      <button type="button" class="rail-btn" data-view="career" aria-pressed="false">Career</button>
+      <button type="button" class="rail-btn" data-view="network" aria-pressed="false">Multiplayer</button>
+      <button type="button" class="rail-btn" data-view="settings" aria-pressed="false">Settings</button>
+    </nav>
+
+    <!-- What is on the ramp: the car's name, its class, and what it is good at.
+         The bars are the drive figures the physics actually uses. -->
+    <section class="spec" id="spec">
+      <div class="spec-head">
+        <h2 id="spec-name">&nbsp;</h2>
+        <span class="spec-class" id="spec-class"></span>
+      </div>
+      <div class="spec-bars" id="spec-bars"></div>
+      <p class="spec-blurb" id="spec-blurb"></p>
+    </section>
+
     <aside class="panel-card">
       <div class="panel-top">
         <span class="panel-title">Race setup</span>
@@ -166,41 +186,40 @@
       </div>
 
       <div class="setup">
-        <div class="field">
-          <label>Mode</label>
+        <div class="field" data-view="race">
+          <label>Race class</label>
           <div class="opts" id="pick-mode"></div>
         </div>
-        <div class="field">
-          <label>Car</label>
+        <div class="field" data-view="garage">
+          <label>Choose vehicle</label>
           <div class="opts" id="pick-chassis"></div>
         </div>
-        <div class="field">
-          <label>Circuit</label>
+        <div class="field" data-view="tracks">
+          <label>Track</label>
           <div class="opts" id="pick-track"></div>
         </div>
-        <div class="grid-2">
+        <div class="grid-2" data-view="race">
           <div class="field">
-            <label>Vision</label>
+            <label>Light</label>
             <div class="opts" id="pick-vision"></div>
           </div>
           <div class="field">
-            <label>Weather</label>
+            <label>Conditions</label>
             <div class="opts" id="pick-weather"></div>
           </div>
         </div>
+        <section class="career" id="career" data-view="career">
+          <div class="tiles" id="career-tiles"></div>
+          <div class="badges" id="career-badges"></div>
+        </section>
         <p class="hint" id="hint"></p>
       </div>
 
       <div class="actions">
-        <button id="start">DROP THE FLAG</button>
-        <button id="join" class="ghost">RACE ON THIS NETWORK</button>
+        <button id="start" class="cta">Start race<kbd>Enter</kbd></button>
+        <button id="join" class="ghost">Race on this network</button>
       </div>
     </aside>
-
-    <section class="career" id="career">
-      <div class="tiles" id="career-tiles"></div>
-      <div class="badges" id="career-badges"></div>
-    </section>
   </div>
 
   <div id="wizard" class="sheet" hidden>
@@ -282,10 +301,28 @@
         <button class="tab" data-tab="controls" aria-selected="false">Controls</button>
       </div>
 
+      <!-- One fader per family of sound. The mixer is the same one the game
+           runs on, so what is set here is what the race is mixed at. -->
       <section class="tab-panel" data-panel="audio">
         <label class="row-set">
           <span>Sound</span>
           <input type="checkbox" id="set-sound" class="switch" checked />
+        </label>
+        <label class="row-set">
+          <span>Master</span>
+          <input type="range" id="set-master" min="0" max="100" value="100" />
+        </label>
+        <label class="row-set">
+          <span>Engine</span>
+          <input type="range" id="set-engine" min="0" max="100" value="100" />
+        </label>
+        <label class="row-set">
+          <span>Tyres</span>
+          <input type="range" id="set-tyres" min="0" max="100" value="100" />
+        </label>
+        <label class="row-set">
+          <span>Environment</span>
+          <input type="range" id="set-env" min="0" max="100" value="100" />
         </label>
         <label class="row-set">
           <span>Music</span>
@@ -294,6 +331,10 @@
         <label class="row-set">
           <span>Effects</span>
           <input type="range" id="set-sfx" min="0" max="100" value="100" />
+        </label>
+        <label class="row-set">
+          <span>Interface</span>
+          <input type="range" id="set-ui" min="0" max="100" value="100" />
         </label>
       </section>
 
@@ -353,7 +394,39 @@
     </div>
   </div>
 
-  <div id="loading">building circuit&hellip;</div>
+  <!-- Development read-out, F3. Hidden unless it is asked for. -->
+  <pre id="debug" hidden></pre>
+
+  <!-- The boot screen. It is markup rather than something the module builds,
+       so it is on screen while the module and Three.js are still downloading —
+       which is the part of the wait a loading screen exists to cover. -->
+  <div id="boot">
+    <div class="boot-grain"></div>
+    <div class="boot-streaks"><i></i><i></i><i></i><i></i></div>
+    <div class="boot-scan"></div>
+
+    <div class="boot-centre">
+      <div class="boot-logo" id="boot-logo"></div>
+      <p class="boot-tagline" id="boot-tagline">Race beyond the limit</p>
+    </div>
+
+    <div class="boot-foot">
+      <div class="boot-line">
+        <span class="boot-status" id="boot-status">System initialization</span>
+        <span class="boot-pct" id="boot-pct">0%</span>
+      </div>
+      <div class="boot-bar"><i id="boot-fill"></i></div>
+      <div class="boot-rows" id="boot-rows"></div>
+    </div>
+
+    <div class="boot-error" id="boot-error" hidden>
+      <h3>Race system warning</h3>
+      <p></p>
+      <button type="button" id="boot-retry">Retry</button>
+    </div>
+  </div>
+
+  <div id="loading" hidden>building circuit&hellip;</div>
 </div>
 <script type="module" src="src/main.js"></script>
 </body>

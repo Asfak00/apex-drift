@@ -2,7 +2,10 @@ import * as THREE from 'three';
 
 // Pooled billboard puffs. Sliding tyres and car-to-car hits both spend from the
 // same pool, so the cost is bounded no matter how untidy the driving gets.
-const POOL = 90;
+const POOL = 120;
+
+// Water off a wet road is almost white and very short-lived.
+const SPRAY = new THREE.Color(0xdfe9f4);
 
 function puffTexture() {
   const size = 64;
@@ -38,12 +41,15 @@ export class Effects {
     });
     this.cursor = 0;
     this.tint = new THREE.Color(0xd8d8d8);
+    this.dustTint = new THREE.Color(0x8f7f5a);
   }
 
-  // Surface decides what a spinning tyre throws up.
+  // Surface decides what a spinning tyre throws up, and what the verge beside
+  // it throws up when the car puts a wheel on it.
   setSurface(spec) {
     const bySurface = { asphalt: 0xb9c3cf, concrete: 0xc8ccd2, dirt: 0xb08b55 };
     this.tint.setHex(bySurface[spec?.surface] ?? 0xb9c3cf);
+    this.dustTint.setHex(spec?.surface === 'dirt' ? 0xc0a06a : 0x8f7f5a);
   }
 
   #take() {
@@ -72,13 +78,27 @@ export class Effects {
     p.spin = (Math.random() - 0.5) * 2;
   }
 
-  // Smoke from a car whose tyres are past the grip limit.
-  tyreSmoke(car, dt) {
+  // What comes off the tyres. Three things happen at the back of a car, and
+  // the surface and the weather decide which: rubber smoke when a dry tyre is
+  // past the limit, spray off a wet road at any speed, and dust when a wheel
+  // is off the sealed surface altogether.
+  tyreSmoke(car, dt, wet = 0) {
     const slide = car.slide ?? 0;
-    if (slide < 1.6 || car.kmh < 14) return;
-    const strength = Math.min(1, (slide - 1.6) / 9);
-    // Rate follows how hard it is sliding, not the frame rate.
-    this.budget = (this.budget ?? 0) + dt * (10 + strength * 40);
+    const sliding = slide > 1.6 && car.kmh > 14;
+    const offRoad = !car.onRoad && car.kmh > 22;
+    const spraying = wet > 0.2 && car.kmh > 30;
+    if (!sliding && !offRoad && !spraying) return;
+
+    const slip = sliding ? Math.min(1, (slide - 1.6) / 9) : 0;
+    // A wet road puts water in the air instead of rubber, so hard sliding on
+    // one makes less smoke, not more.
+    const smoke = slip * (1 - wet * 0.7);
+    const spray = spraying ? Math.min(1, (car.kmh - 30) / 150) * wet : 0;
+    const dust = offRoad ? Math.min(1, (car.kmh - 22) / 90) : 0;
+    const rate = smoke * 40 + spray * 26 + dust * 30 + (sliding ? 8 : 0);
+
+    // Rate follows how hard it is working, not the frame rate.
+    this.budget = (this.budget ?? 0) + dt * rate;
     while (this.budget >= 1) {
       this.budget -= 1;
       const rear = car.renderForward.multiplyScalar(-car.chassis.body.length * 0.32);
@@ -87,7 +107,21 @@ export class Effects {
       at.x += Math.cos(car.renderYaw) * side;
       at.z -= Math.sin(car.renderYaw) * side;
       at.y -= 0.45;
-      this.spawn(at, { strength, size: 1.3, ttl: 0.75 + strength * 0.5, rise: 0.9 });
+
+      // Whichever source is strongest is what this puff is made of.
+      if (dust >= smoke && dust >= spray) {
+        this.spawn(at, {
+          strength: dust, size: 1.15, ttl: 0.6 + dust * 0.5, rise: 0.7,
+          color: this.dustTint, spread: 1.1,
+        });
+      } else if (spray > smoke) {
+        this.spawn(at, {
+          strength: spray * 0.8, size: 0.85, ttl: 0.34, rise: 0.45,
+          color: SPRAY, spread: 1.6,
+        });
+      } else {
+        this.spawn(at, { strength: smoke, size: 1.3, ttl: 0.75 + smoke * 0.5, rise: 0.9 });
+      }
     }
   }
 

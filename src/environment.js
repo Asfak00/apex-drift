@@ -8,23 +8,92 @@ const SKY_VERT = `
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }`;
 
+// Sky, in the order the eye reads it: a gradient from the zenith down through
+// the haze that collects at the horizon, the sun and the glow around it, a
+// layer of cloud that thins overhead and stacks up at the horizon, and stars.
+// All of it is driven by the same sun direction the scene is lit by, so the
+// bright part of the sky is the part the shadows point away from.
 const SKY_FRAG = `
   uniform vec3 uTop;
   uniform vec3 uHorizon;
+  uniform vec3 uSunColor;
+  uniform vec3 uSunDir;
   uniform float uStars;
+  uniform float uClouds;
+  uniform float uHaze;
+  uniform float uTime;
   varying vec3 vDir;
 
   float hash(vec3 p) {
     return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
   }
+
+  float noise(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float n000 = hash(i);
+    float n100 = hash(i + vec3(1.0, 0.0, 0.0));
+    float n010 = hash(i + vec3(0.0, 1.0, 0.0));
+    float n110 = hash(i + vec3(1.0, 1.0, 0.0));
+    float n001 = hash(i + vec3(0.0, 0.0, 1.0));
+    float n101 = hash(i + vec3(1.0, 0.0, 1.0));
+    float n011 = hash(i + vec3(0.0, 1.0, 1.0));
+    float n111 = hash(i + vec3(1.0, 1.0, 1.0));
+    return mix(
+      mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+      mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z);
+  }
+
+  float fbm(vec3 p) {
+    float v = 0.0, a = 0.5;
+    for (int i = 0; i < 4; i++) { v += a * noise(p); p *= 2.02; a *= 0.5; }
+    return v;
+  }
+
   void main() {
-    float h = clamp(vDir.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 col = mix(uHorizon, uTop, pow(h, 0.7));
-    if (uStars > 0.01 && vDir.y > 0.0) {
-      vec3 cell = floor(vDir * 240.0);
-      float s = step(0.9975, hash(cell));
-      col += s * uStars * vDir.y;
+    vec3 dir = normalize(vDir);
+    float up = clamp(dir.y, -1.0, 1.0);
+    float h = clamp(up * 0.5 + 0.5, 0.0, 1.0);
+    vec3 col = mix(uHorizon, uTop, pow(h, 0.62));
+
+    // Haze thickens toward the horizon along the line of sight.
+    float band = pow(1.0 - clamp(abs(up) * 1.6, 0.0, 1.0), 3.0);
+    col = mix(col, uHorizon, band * uHaze);
+
+    // Sun: a hard disc inside a wide glow, warmed toward the horizon.
+    float toSun = max(dot(dir, normalize(uSunDir)), 0.0);
+    col += uSunColor * pow(toSun, 900.0) * 6.0;
+    col += uSunColor * pow(toSun, 9.0) * 0.30;
+    col += uSunColor * pow(toSun, 2.2) * 0.07;
+
+    if (uStars > 0.001 && up > 0.0) {
+      vec3 cell = floor(dir * 260.0);
+      float s = step(0.9976, hash(cell));
+      col += s * uStars * up * (0.6 + 0.4 * hash(cell + 3.0));
     }
+
+    if (uClouds > 0.001 && up > 0.005) {
+      // Flattened dome: the same cloud deck seen at a shallower angle near the
+      // horizon, which is what stacks it up into a bank there. The lattice has
+      // to be several cells across the visible sky or the whole deck lands
+      // inside one cell and comes out a flat wash.
+      vec3 p = dir / max(up, 0.05);
+      // The deck drifts, slowly. It is the only thing moving in an empty sky,
+      // and without it a still frame of the menu looks like a photograph.
+      float deck = fbm(p * 3.2 + vec3(uTime * 0.012, 0.0, uTime * 0.005));
+      // More cover pulls the threshold down, so an overcast sky closes up
+      // rather than growing brighter patches.
+      float cover = smoothstep(0.62 - uClouds * 0.34, 0.86 - uClouds * 0.3, deck);
+      cover *= smoothstep(0.0, 0.1, up) * min(1.0, uClouds * 1.35);
+      // Lit on top and on the sun side, dark underneath — and a heavy deck is
+      // darker than a few fair-weather clouds.
+      float heavy = smoothstep(0.35, 0.95, uClouds);
+      vec3 lit = mix(uHorizon * 0.95, uSunColor, 0.3) + uSunColor * pow(toSun, 3.0) * 0.35;
+      vec3 shade = mix(uHorizon, uTop, 0.35) * mix(0.68, 0.3, heavy);
+      col = mix(col, mix(shade, lit, clamp(deck * 1.2 - 0.15, 0.0, 1.0)), cover);
+    }
+
     gl_FragColor = vec4(col, 1.0);
   }`;
 
@@ -135,7 +204,12 @@ export class Environment {
       uniforms: {
         uTop: { value: new THREE.Color(0x87b6e8) },
         uHorizon: { value: new THREE.Color(0xd8e6f4) },
+        uSunColor: { value: new THREE.Color(0xfff4e0) },
+        uSunDir: { value: new THREE.Vector3(0.45, 0.85, 0.3) },
         uStars: { value: 0 },
+        uClouds: { value: 0.25 },
+        uHaze: { value: 0.5 },
+        uTime: { value: 0 },
       },
     });
     this.sky = new THREE.Mesh(new THREE.SphereGeometry(1400, 24, 16), this.skyMat);
@@ -195,9 +269,18 @@ export class Environment {
     const v = VISIONS[visionKey];
     const w = WEATHERS[weatherKey];
 
-    this.skyMat.uniforms.uTop.value.setHex(v.sky);
-    this.skyMat.uniforms.uHorizon.value.setHex(v.horizon);
+    // Weather takes the light out of the sky itself, not only out of the sun:
+    // a storm over a bright blue dome reads as rain on a sunny day.
+    const gloom = 0.42 + 0.58 * w.lightScale;
+    this.skyMat.uniforms.uTop.value.setHex(v.sky).multiplyScalar(gloom);
+    this.skyMat.uniforms.uHorizon.value.setHex(v.horizon).multiplyScalar(gloom);
+    this.skyMat.uniforms.uSunColor.value.setHex(v.sunColor);
+    this.skyMat.uniforms.uSunDir.value.set(...v.sun).normalize();
     this.skyMat.uniforms.uStars.value = visionKey === 'night' ? 0.9 : visionKey === 'neon' ? 0.4 : 0;
+    // Weather is what the sky is made of: cloud cover and how far the haze
+    // reaches are the same numbers that set the fog and the light.
+    this.skyMat.uniforms.uClouds.value = Math.min(1, (v.clouds ?? 0.22) + (1 - w.fogScale) * 0.9);
+    this.skyMat.uniforms.uHaze.value = Math.min(1, 0.35 + (1 - w.fogScale) * 0.65);
 
     this.sun.color.setHex(v.sunColor);
     this.sun.intensity = v.sunI * w.lightScale;
@@ -205,7 +288,12 @@ export class Environment {
     this.sun.castShadow = w.fogScale > 0.4 && v.sunI > 0.5;
 
     this.hemi.color.setHex(v.ambient);
-    this.hemi.intensity = v.ambI * w.lightScale;
+    // A night circuit is lit — by floodlights, by the city behind it, by the
+    // cars themselves. Whatever the numbers say, the ambient never falls below
+    // what it takes to see the road: an unlit track is not atmosphere, it is a
+    // driver who cannot see where the corner goes.
+    const floor = v.lights ? 0.46 : 0.1;
+    this.hemi.intensity = Math.max(v.ambI * w.lightScale, floor);
 
     // Weather compresses the fog band that the vision established.
     this.scene.fog.color.setHex(v.fog);
@@ -222,11 +310,26 @@ export class Environment {
     road.roughness = (dirt ? 1 : 0.92) - w.wet * (dirt ? 0.35 : 0.62);
     road.metalness = (dirt ? 0 : 0.02) + w.wet * (dirt ? 0.18 : 0.42);
     road.color.setHex(base.road).multiplyScalar(1 - w.wet * 0.3);
+    // A dry road takes almost nothing from the sky; a wet one is a mirror of
+    // it. This is what makes rain read as water rather than as a dark tint.
+    road.envMapIntensity = 0.25 + w.wet * 1.5;
+    // Standing water fills the texture of the surface, so the aggregate stops
+    // showing through as the road gets wetter. Without this the reflection
+    // breaks up into sparkle on every chipping.
+    road.normalScale?.setScalar((dirt ? 1.1 : 0.7) * (1 - w.wet * 0.78));
+    if (this.track.edgeMaterial) this.track.edgeMaterial.roughness = 0.72 - w.wet * 0.45;
 
     const snowy = weatherKey === 'snow';
     const tint = new THREE.Color(v.groundTint);
-    this.track.groundMaterial.color.setHex(snowy ? 0xdfe9f2 : base.ground).lerp(tint, snowy ? 0 : 0.45);
-    this.track.hillMaterial.color.setHex(snowy ? 0xcbd9e6 : base.hills).lerp(tint, snowy ? 0 : 0.4);
+    // How far the time of day is allowed to push the ground's colour. A green
+    // tint belongs on a grass verge; on desert dirt or a rock cutting it turns
+    // the whole outfield olive, so those keep almost all of their own colour.
+    const arid = this.track.spec.surface === 'dirt' || this.track.spec.scenery === 'canyon';
+    const mix = arid ? 0.14 : 0.45;
+    this.track.groundMaterial.color.setHex(snowy ? 0xdfe9f2 : base.ground)
+      .lerp(tint, snowy ? 0 : mix);
+    this.track.hillMaterial.color.setHex(snowy ? 0xcbd9e6 : base.hills)
+      .lerp(tint, snowy ? 0 : mix * 0.9);
     // Windows and street lamps only carry light once the sun is off them.
     const lit = v.lights ? 1 : 0;
     if (this.track.buildingMaterial) {
@@ -236,6 +339,12 @@ export class Environment {
       this.track.lampMaterial.emissiveIntensity = lit ? 2.6 : 0.25;
     }
     this.track.pylonMaterial.emissiveIntensity = v.lights ? 2.6 : 0.8;
+    if (this.track.signMaterial) {
+      this.track.signMaterial.emissiveIntensity = v.lights ? 1.4 : 0.35;
+    }
+    if (this.track.floodMaterial) {
+      this.track.floodMaterial.emissiveIntensity = v.lights ? 3.4 : 1.6;
+    }
     if (this.track.barrierMaterial) {
       this.track.barrierMaterial.emissiveIntensity = v.lights ? 1.2 : 0.25;
     }
@@ -250,10 +359,13 @@ export class Environment {
     this.probe?.dispose();
     this.probe = this.pmrem.fromScene(this.envScene, 0, 0.1, 60);
     this.scene.environment = this.probe.texture;
-    this.scene.environmentIntensity = 0.55 + this.weather.lightScale * 0.45;
+    // The sky probe is the only thing lighting surfaces that face away from
+    // the sun, so it keeps a floor as well.
+    this.scene.environmentIntensity = Math.max(0.42, 0.55 + this.weather.lightScale * 0.45);
   }
 
   update(dt, camera, clock) {
+    this.skyMat.uniforms.uTime.value += dt;
     this.sky.position.copy(camera.position);
     this.sun.target.position.copy(camera.position);
     this.sun.position.copy(camera.position).add(
@@ -267,6 +379,7 @@ export class Environment {
         this.flash = 1;
         this.nextStrike = 3.5 + Math.random() * 9;
       }
+      if (this.flash >= 1) this.onStrike?.();
       if (this.flash > 0) {
         this.flash = Math.max(0, this.flash - dt * 3.4);
         const pulse = this.flash * this.flash;

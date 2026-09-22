@@ -10,9 +10,12 @@ import { Hud, formatTime } from './hud.js';
 import { Input } from './input.js';
 import { Audio } from './audio.js';
 import { Effects } from './effects.js';
+import { Marks } from './marks.js';
 import { TouchControls, isTouchDevice } from './touch.js';
 import { Wallet } from './wallet.js';
 import { PitCrew } from './pit-crew.js';
+import { Showroom } from './showroom.js';
+import { DebugView } from './debug.js';
 
 const VISION_KEYS = Object.keys(VISIONS);
 const WEATHER_KEYS = Object.keys(WEATHERS);
@@ -42,6 +45,9 @@ export class Game {
     this.track = new Track(TRACKS[this.trackKey]);
     this.scene.add(this.track.group);
     this.env = new Environment(this.scene, this.renderer, this.track);
+    // Lightning is the environment's event; the thunder that goes with it is
+    // the mixer's, so the environment only has to say when one struck.
+    this.env.onStrike = () => this.audio.thunder(0.6 + Math.random() * 0.4);
     this.hud = new Hud(this.track);
     this.input = new Input();
     this.audio = new Audio();
@@ -50,6 +56,10 @@ export class Game {
     this.#bindPitButtons();
     this.effects = new Effects(this.scene);
     this.effects.setSurface(this.track.spec);
+    // Rubber on the road outlives the puff of smoke that made it, so it is a
+    // surface of its own rather than part of the particle pool.
+    this.marks = new Marks(this.scene);
+    this.marks.setSurface(this.track.spec);
     this.crew = new PitCrew(this.track);
     this.scene.add(this.crew.group);
     this.shake = 0;
@@ -81,6 +91,7 @@ export class Game {
 
     this.#bindActions();
     this.#bindResize();
+    this.#bindShowroomDrag(canvas);
     this.lastFrame = performance.now();
     this.loop = this.loop.bind(this);
   }
@@ -103,6 +114,13 @@ export class Game {
     this.input.on('sound', () => {
       const on = this.audio.toggle();
       this.hud.toast(on ? 'SOUND ON' : 'SOUND OFF', 1, on ? '#4de3b0' : '#7d8ba3');
+    });
+    this.input.on('debug', () => {
+      this.debug ??= new DebugView(this.scene, {
+        renderer: this.renderer, camera: this.camera, sun: this.env.sun,
+      });
+      const on = this.debug.toggle(this.track);
+      this.hud.toast(on ? 'DEBUG ON' : 'DEBUG OFF', 1, '#00ffcc');
     });
     this.input.on('respawn', () => {
       if (this.state === 'racing') {
@@ -196,6 +214,8 @@ export class Game {
     this.env.setTrack(this.track);
     this.hud.setTrack(this.track);
     this.effects.setSurface(this.track.spec);
+    this.marks.setSurface(this.track.spec);
+    this.marks.clear();
     this.crew.setTrack(this.track);
     for (const car of this.simulated) car.track = this.track;
   }
@@ -327,11 +347,14 @@ export class Game {
   #applyAudioProfile() {
     this.audio.setMood(this.track.spec.music ?? 'circuit');
     this.audio.setEngine(CHASSIS[this.chassisKey]?.engine ?? 'v12');
+    this.audio.setWeather(this.env.weather.wet, this.env.weather.wind);
   }
 
   #applyEnv() {
     this.env.apply(VISION_KEYS[this.visionIndex], WEATHER_KEYS[this.weatherIndex]);
     for (const car of this.cars) car.setHeadlights(this.env.lightsOn, this.env.weather.wet);
+    // The conditions are heard as well as seen.
+    this.audio.setWeather(this.env.weather.wet, this.env.weather.wind);
   }
 
   // Display and control preferences the player set. Applied immediately so a
@@ -360,8 +383,18 @@ export class Game {
   // The menu is shown over a live scene: the chosen car, parked on the chosen
   // circuit, under the chosen sky and weather, turning slowly. Selecting an
   // option and seeing it are the same act.
-  preview({ mode, vision, weather, track = this.trackKey, chassis = this.chassisKey }) {
+  // `style` decides what the menu is looking at: 'studio' is the garage, with
+  // the car on a turntable under lights; 'circuit' stands the car on the grid
+  // of the selected track under the selected sky, so a change of weather or
+  // time of day is something the player watches happen.
+  preview({ mode, vision, weather, track = this.trackKey, chassis = this.chassisKey },
+    { style = this.previewStyle ?? 'studio' } = {}) {
+    this.previewStyle = style;
+    const swapped = chassis !== this.chassisKey;
     this.setChassis(chassis);
+    // A new car arrives rather than appearing: the turntable turns a little
+    // further and the car grows into place over a few frames.
+    if (swapped) this.previewSwap = 1;
     this.setTrack(track);
     this.mode = MODES[mode];
     this.modeKey = mode;
@@ -384,29 +417,176 @@ export class Game {
     this.audio.silenceEngine();
     this.state = 'preview';
     this.previewAngle ??= 0.6;
+    // The menu shows the car in a studio, not on the grid: the circuit, its
+    // crowd and its sky are all switched off behind the room.
+    if (style === 'studio') {
+      this.showroom ??= new Showroom(this.scene, this.renderer);
+      this.track.group.visible = false;
+      this.env.sky.visible = false;
+      this.showroom.show(this.player);
+    } else {
+      this.#leaveShowroom();
+    }
     this.lastFrame = performance.now();
     if (!this.running) { this.running = true; requestAnimationFrame(this.loop); }
   }
 
-  #orbitPreview(dt) {
-    this.previewAngle += dt * 0.22;
+  // The reveal on the boot screen: one continuous camera move around the car,
+  // from the front wheel out to the whole car, in the studio the menu uses.
+  // It is driven by elapsed time rather than by loading progress, because a
+  // camera that jumps whenever an asset lands is not a camera move.
+  intro(time) {
+    this.showroom ??= new Showroom(this.scene, this.renderer);
+    if (!this.showroom.active) {
+      this.track.group.visible = false;
+      this.env.sky.visible = false;
+      this.showroom.show(this.player);
+      this.player.render(1);
+    }
     const car = this.player;
-    const centre = car.position;
-    // Close enough that the car is the subject, high enough to read its shape.
-    const radius = 6.2 + car.chassis.body.length * 0.62;
-    this.camera.position.set(
-      centre.x + Math.sin(this.previewAngle) * radius,
-      centre.y + 1.95,
-      centre.z + Math.cos(this.previewAngle) * radius,
-    );
-    this.camera.lookAt(centre.x, centre.y + 0.5, centre.z);
-    if (this.camera.fov !== 40) {
-      this.camera.fov = 40;
+    const b = car.chassis.body;
+    const hw = b.width / 2;
+    const len = b.length;
+
+    // The path is described in the car's own space and then taken into the
+    // world, so every point on it is outside the bodywork whatever the car is
+    // and wherever it is standing. Camera first, then what it is looking at.
+    const leg = (from, to, k) => from.map((v, i) => v + (to[i] - v) * k);
+    const eye = [
+      [-hw * 2.9, 0.55, len * 0.95],      // low, level with the front wheel
+      [-hw * 2.4, 0.95, len * 1.75],      // out in front of it
+      [-hw * 3.4, b.roof + b.ride + 1.6, len * 1.95],   // three-quarter front
+    ];
+    const aim = [
+      [-hw * 0.55, 0.34, len * 0.30],     // the wheel itself
+      [0, 0.46, len * 0.18],
+      [0, 0.56, 0],                       // the whole car
+    ];
+
+    // Eased 0..1 over six seconds and then held: the move finishes whether the
+    // loading took two seconds or ten.
+    const k = Math.min(1, time / 4.5);
+    const ease = k * k * (3 - 2 * k);
+    const half = ease < 0.5 ? ease * 2 : (ease - 0.5) * 2;
+    const seg = ease < 0.5 ? 0 : 1;
+    const local = leg(eye[seg], eye[seg + 1], half * half * (3 - 2 * half));
+    const at = leg(aim[seg], aim[seg + 1], half);
+
+    this.introV ??= new THREE.Vector3();
+    this.introLook ??= new THREE.Vector3();
+    this.introV.set(local[0], local[1], local[2]);
+    this.camera.position.copy(car.mesh.localToWorld(this.introV));
+    this.camera.lookAt(car.mesh.localToWorld(this.introLook.set(at[0], at[1], at[2])));
+    this.camera.rotation.z = 0;
+    const fov = 34 + ease * 6;
+    if (this.camera.fov !== fov) {
+      this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
     }
+    // The turntable keeps its glow alive behind the panel.
+    this.showroom.update(1 / 60, time);
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  // The last beat of the boot sequence: the car lights up.
+  introHeadlights() {
+    this.player.setHeadlights(true, 0.4);
+    this.player.tailMat.emissiveIntensity = 4.5;
+  }
+
+  // Put the circuit, the sky and the weather back the way a race needs them.
+  #leaveShowroom() {
+    if (!this.showroom?.active) return;
+    this.showroom.hide();
+    this.track.group.visible = true;
+    this.env.sky.visible = true;
+    // The environment probe and the fog belong to the conditions, and the
+    // studio borrowed both of them.
+    this.#applyEnv();
+  }
+
+  // Dragging across the scene turns the car on its plinth. Let go and it goes
+  // back to turning on its own, from wherever it was left.
+  #bindShowroomDrag(canvas) {
+    let dragging = false;
+    let lastX = 0;
+    canvas.addEventListener('pointerdown', (e) => {
+      if (this.state !== 'preview') return;
+      dragging = true;
+      lastX = e.clientX;
+      this.previewSpin = 0;
+      canvas.setPointerCapture?.(e.pointerId);
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - lastX;
+      lastX = e.clientX;
+      this.previewAngle -= dx * 0.008;
+      this.previewSpin = -dx * 0.05;
+    });
+    const release = () => {
+      if (!dragging) return;
+      dragging = false;
+      this.previewHold = 0.9;      // a moment of coasting before it resumes
+    };
+    canvas.addEventListener('pointerup', release);
+    canvas.addEventListener('pointercancel', release);
+    canvas.addEventListener('pointerleave', release);
+  }
+
+  #orbitPreview(dt) {
+    // The boot reveal owns the camera until it is finished with it.
+    if (this.introActive) return;
+    // Momentum from a drag, then back to the slow turntable.
+    const spin = this.previewSpin ?? 0;
+    if (Math.abs(spin) > 0.0005) {
+      this.previewAngle += spin;
+      this.previewSpin = spin * (1 - Math.min(1, dt * 3.4));
+    } else {
+      this.previewHold = Math.max(0, (this.previewHold ?? 0) - dt);
+      if (this.previewHold === 0) this.previewAngle += dt * 0.16;
+    }
+    const car = this.player;
+    const centre = car.position;
+    // A car that has just been swapped in grows into place and the camera
+    // pulls back a touch, so the change reads as an arrival.
+    const swap = this.previewSwap ?? 0;
+    if (swap > 0) {
+      this.previewSwap = Math.max(0, swap - dt * 2.6);
+      const k = 1 - this.previewSwap;
+      car.mesh.scale.setScalar(0.82 + k * 0.18);
+      car.mesh.rotation.y = car.yaw + this.previewSwap * 0.5;
+    } else if (car.mesh.scale.x !== 1) {
+      car.mesh.scale.setScalar(1);
+      car.mesh.rotation.y = car.yaw;
+    }
+    // Close enough that the car is the subject, high enough to read its shape.
+    // In portrait the setup panel owns the bottom of the screen, so the car is
+    // framed higher up by aiming below it.
+    const portrait = innerHeight > innerWidth;
+    const radius = (portrait ? 8.6 : 7.4) + car.chassis.body.length * 0.74
+      + swap * 1.4;
+    // A low car is shot from lower down: the camera sits a little above the
+    // roofline whatever the car is, which is what makes a prototype look low
+    // and a rally hatch look tall.
+    const eye = car.chassis.body.roof + car.chassis.body.ride + 0.75;
+    this.camera.position.set(
+      centre.x + Math.sin(this.previewAngle) * radius,
+      centre.y + (portrait ? eye + 0.35 : eye),
+      centre.z + Math.cos(this.previewAngle) * radius,
+    );
+    this.camera.lookAt(centre.x, centre.y + (portrait ? -0.9 : 0.58), centre.z);
+    this.camera.rotation.z = 0;
+    if (this.camera.fov !== 38) {
+      this.camera.fov = 38;
+      this.camera.updateProjectionMatrix();
+    }
+    this.showroom?.update(dt, performance.now() / 1000);
   }
 
   start({ mode, vision, weather, track = this.trackKey, chassis = this.chassisKey }) {
+    // Whatever the menu turned off, a race turns back on.
+    this.#leaveShowroom();
     this.setChassis(chassis);
     this.setTrack(track);
     this.mode = MODES[mode];
@@ -519,6 +699,7 @@ export class Game {
       this.hud.toast(label.toUpperCase(), 1.6,
         `#${car.tyres.color.toString(16).padStart(6, '0')}`);
       this.#roar(0.7);
+      this.audio.onTyreChange();
     } else {
       this.hud.note(`${car.name} → ${label}`, car.color);
     }
@@ -535,11 +716,21 @@ export class Game {
     car.lastLapTime = lapTime;
     if (this.mode.laps) car.lapsLeft = Math.max(0, this.mode.laps - car.lap);
     if (car === this.player) this.#roar(0.55);
-    if (car.bestLapTime == null || lapTime < car.bestLapTime) {
+    const best = car.bestLapTime == null || lapTime < car.bestLapTime;
+    if (best) {
       car.bestLapTime = lapTime;
       if (car === this.player) this.hud.toast(`BEST ${formatTime(lapTime)}`, 1.6, '#4de3b0');
     } else if (car === this.player) {
       this.hud.toast(formatTime(lapTime), 1.3);
+    }
+    // The driver should be able to hear which lap they are on without reading
+    // the HUD: a chime for a lap, a brighter one for a best, a bell for the
+    // last time round.
+    if (car === this.player) {
+      if (this.mode.laps && car.lap === this.mode.laps - 1) this.audio.onFinalLap();
+      else if (!this.mode.laps || car.lap < this.mode.laps) {
+        this.audio.onLapComplete(lapTime, { best });
+      }
     }
 
     if (car === this.player && this.multiplayer) {
@@ -563,6 +754,9 @@ export class Game {
     const place = order.indexOf(this.player) + 1;
     this.hud.toast('FINISH', 2.2, '#ffc94d');
     this.#roar(1);
+    this.audio.onRaceFinish({
+      won: place === 1, place, seconds: this.player.finishTime,
+    });
     if (this.multiplayer) {
       // The server ranks the field once everyone is in; main.js renders that.
       this.lastPayout = this.wallet.award({
@@ -607,8 +801,62 @@ export class Game {
     });
   }
 
+  // Pull the camera in until it is out of whatever it is inside, and lift it
+  // clear of the terrain. The boom shortens toward the car rather than sliding
+  // sideways, so the car stays in the middle of the frame.
+  #clearCamera(carAt) {
+    const boom = this.camPos.clone().sub(carAt);
+    const reach = boom.length();
+    if (reach > 0.3) {
+      const dir = boom.multiplyScalar(1 / reach);
+      const probe = this.camScratch ??= new THREE.Vector3();
+      let allowed = reach;
+      for (let d = 1.2; d <= reach; d += 1.1) {
+        probe.copy(carAt).addScaledVector(dir, d);
+        const blocked = this.track.solidsNear(probe.x, probe.z, 1.2).some((solid) => {
+          if (probe.y > solid.y + solid.height + 0.4) return false;
+          return Math.hypot(solid.x - probe.x, solid.z - probe.z) < solid.radius + 0.9;
+        });
+        if (blocked) { allowed = Math.max(2.4, d - 1.1); break; }
+      }
+      if (allowed < reach) this.camPos.copy(carAt).addScaledVector(dir, allowed);
+    }
+    // Above the ground beside the road, whichever side the camera is on.
+    const p = this.track.project(this.camPos, this.player.hintIndex);
+    const floor = this.track.groundAt(p.t, p.lateral) + 0.9;
+    if (this.camPos.y < floor) this.camPos.y = floor;
+  }
+
+  // Rubber under the rear wheels of a car that is past the limit. The marks
+  // are laid at the contact patch in world space, so they stay on the road
+  // once the car has gone.
+  #layRubber(car) {
+    const slide = car.slide ?? 0;
+    if (!(slide > 1.9 && car.kmh > 18)) {
+      for (const wheel of car.wheels) this.marks.release(wheel);
+      return;
+    }
+    const strength = Math.min(1, (slide - 1.9) / 8);
+    const across = car.renderRight;
+    this.patchPoint ??= new THREE.Vector3();
+    for (const wheel of car.wheels) {
+      if (wheel.steers) continue;
+      wheel.pivot.getWorldPosition(this.patchPoint);
+      const at = this.patchPoint.clone().setY(car.renderPosition.y + 0.012);
+      this.marks.lay(wheel, at, across, wheel.radius * 0.78, strength);
+    }
+  }
+
   #updateCamera(dt) {
     const car = this.player;
+    // How hard the car is gaining or losing speed, smoothed: the camera mount
+    // has mass, so it answers the change rather than the current value.
+    const speed = car.kmh;
+    const rate = THREE.MathUtils.clamp((speed - (this.camLastKmh ?? speed)) / Math.max(dt, 1e-3) / 260, -1, 1);
+    this.camLastKmh = speed;
+    this.camSquat ??= 0;
+    this.camBank ??= 0;
+    this.camSquat += (rate - this.camSquat) * Math.min(1, dt * 3.4);
     const mode = CAMERAS[this.cameraMode];
     // Follow the drawn car, not the physics car, or the view judders at any
     // frame rate that is not an exact multiple of the physics step.
@@ -630,17 +878,42 @@ export class Game {
       this.camPos.lerp(target, Math.min(1, dt * 1.8));
       look = here;
     } else {
-      // Chase: distance and height open up with speed for a sense of pace.
-      const back = 8.4 + Math.min(4.5, car.kmh * 0.016);
-      const high = 3.5 + Math.min(1.6, car.kmh * 0.005);
+      // Chase: distance and height open up with speed for a sense of pace, and
+      // the mount has some give in it. Acceleration squats the camera back and
+      // down, braking pitches it forward and up, and a car that is sideways is
+      // watched from slightly outside the slide rather than from behind the
+      // bootlid — which is where a camera on a real chase car ends up.
+      const back = 8.4 + Math.min(4.5, car.kmh * 0.016) + this.camSquat * 1.4;
+      const high = 3.5 + Math.min(1.6, car.kmh * 0.005) - this.camSquat * 0.5;
       target = here.clone().addScaledVector(fwd, -back).setY(here.y + high);
+      const drift = THREE.MathUtils.clamp((car.sideslip ?? 0) * 0.28, -2.4, 2.4);
+      target.addScaledVector(car.renderRight, drift);
       this.camPos.lerp(target, Math.min(1, dt * 6.5));
-      look = here.clone().addScaledVector(fwd, 12).setY(here.y + 1.2);
+      look = here.clone().addScaledVector(fwd, 12).setY(here.y + 1.2)
+        .addScaledVector(car.renderRight, drift * 0.55);
     }
 
     this.camLook.lerp(look, Math.min(1, dt * 9));
+    // Whatever the mount wanted, the camera has to stay outside the scenery
+    // and above the ground: a view from inside a wall is not a view.
+    this.#clearCamera(here);
     this.camera.position.copy(this.camPos);
     this.camera.lookAt(this.camLook);
+    // A little roll into the corner, and a little away from a slide. Small
+    // enough that the horizon still reads as the horizon.
+    if (mode !== 'cinematic') {
+      const bank = THREE.MathUtils.clamp((car.latAccel ?? 0) * -0.0022, -0.05, 0.05);
+      this.camBank += (bank - this.camBank) * Math.min(1, dt * 5);
+      this.camera.rotateZ(this.camBank);
+      // Speed shows up as vibration through the mount, not as streaks over the
+      // whole screen. It is inches, and it only exists at the top end.
+      const buzz = Math.max(0, car.kmh - 150) / 420;
+      if (buzz > 0.001) {
+        const t = performance.now() * 0.02;
+        this.camera.position.y += Math.sin(t * 1.7) * buzz * 0.05;
+        this.camera.position.x += Math.sin(t * 2.3) * buzz * 0.04;
+      }
+    }
     // Shake decays on its own; a hit spends into it and the camera pays it out.
     if (this.shake > 0.001) {
       const amp = this.shake * 0.55;
@@ -699,6 +972,9 @@ export class Game {
       if (previous > 0 && along < 0) {
         this.overtakes += 1;
         this.#roar(0.9);
+        this.audio.onPositionChange(true);
+      } else if (previous < 0 && along > 0) {
+        this.audio.onPositionChange(false);
       }
     }
   }
@@ -811,7 +1087,7 @@ export class Game {
       if (after !== before) {
         this.hud.toast(after > 0 ? String(after) : 'GO', after > 0 ? 0.9 : 1.1,
           after > 0 ? '#ffc94d' : '#4de3b0');
-        this.audio.beep(after <= 0);
+        this.audio.onCountdown(after <= 0);
         this.audio.duckMusic(after > 0 ? 0.4 : 1);
       }
       if (this.countdown <= 0) {
@@ -891,11 +1167,16 @@ export class Game {
     const rpm = Math.min(1, Math.max(0.08, (car.kmh - low) / Math.max(1, high - low)));
 
     const firing = !!car.boost?.firing;
-    if (firing && !this.wasBoosting) this.audio.boost();
+    if (firing && !this.wasBoosting) this.audio.onBoost();
     this.wasBoosting = firing;
 
     this.audio.engine({
-      rpm, load: car.input.throttle, kmh: car.kmh, slide: car.slide ?? 0, boosting: firing,
+      rpm, load: car.input.throttle, kmh: car.kmh, slide: car.slide ?? 0,
+      boosting: firing, gear,
+    });
+    this.audio.tyres({
+      kmh: car.kmh, slide: car.slide ?? 0, lockup: car.lockup ?? 0,
+      off: !car.onRoad, wet: this.env.weather.wet, surface: this.track.spec.surface,
     });
   }
 
@@ -907,8 +1188,12 @@ export class Game {
 
     if (this.state === 'preview') {
       this.#orbitPreview(frame);
-      this.track.update(frame, 0.3);
-      this.env.update(frame, this.camera, performance.now() / 1000);
+      // On the circuit the world keeps running behind the menu: the crowd
+      // moves, the sky drifts, the weather falls.
+      if (this.previewStyle !== 'studio') {
+        this.track.update(frame, 0.3);
+        this.env.update(frame, this.camera, performance.now() / 1000);
+      }
       this.effects.update(frame);
       this.renderer.render(this.scene, this.camera);
       return;
@@ -939,7 +1224,9 @@ export class Game {
     }
     if (this.multiplayer) this.net.pushState(this.player, now);
 
-    this.effects.tyreSmoke(this.player, frame);
+    // Everything that slides leaves rubber, not only the car being driven.
+    for (const car of this.simulated) this.#layRubber(car);
+    this.effects.tyreSmoke(this.player, frame, this.env.weather.wet);
     this.effects.update(frame);
     this.#updateCrew(frame);
     // The crowd hums along with the pace of the race and swells when something
@@ -952,6 +1239,10 @@ export class Game {
     this.#updateSound(frame);
     this.env.update(frame, this.camera, this.clock);
     this.#updateCamera(frame);
+    if (this.debug?.on) {
+      this.debug.build(this.track);
+      this.debug.update(this.track, this.player, { fps: 1 / Math.max(frame, 1e-3) });
+    }
 
     this.#armBoost();
     this.#detectPasses(frame);

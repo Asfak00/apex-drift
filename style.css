@@ -1,10 +1,24 @@
+/* Apex Drift: black carbon, brushed metal, one crimson accent. Red marks what
+   is live or selected and nothing else — a screen that is all red has no
+   accent left. Data stays white, the boost stays amber, and a personal best is
+   the only green on the screen. */
 :root{
-  --ink:#e8eef7; --dim:#7d8ba3; --accent:#4de3b0; --warn:#ff5f5f;
-  --panel:rgba(9,14,24,.72); --edge:rgba(120,160,210,.22);
+  --ink:#f2f4f7; --dim:#8b8f98; --accent:#e01b24; --accent-hot:#ff3a3f;
+  --accent-deep:#7d0d13; --good:#3ddc97; --warn:#ffb020; --boost:#ffc94d;
+  --carbon:#0a0b0d; --steel:#8f959e;
+  --panel:rgba(12,13,16,.82); --panel-solid:#11131a;
+  --edge:rgba(235,240,248,.12); --edge-hot:rgba(224,27,36,.55);
   --font:'SF Mono',ui-monospace,Menlo,monospace;
+  /* Condensed display face for headings, from whatever the platform has. */
+  --display:'Arial Narrow','Roboto Condensed','Helvetica Neue Condensed',
+    system-ui,-apple-system,sans-serif;
+  /* Woven carbon, subtle enough to read as a material rather than a pattern. */
+  --carbon-weave:
+    repeating-linear-gradient(45deg,rgba(255,255,255,.028) 0 2px,transparent 2px 4px),
+    repeating-linear-gradient(-45deg,rgba(0,0,0,.30) 0 2px,transparent 2px 4px);
 }
 *{box-sizing:border-box}
-html,body{margin:0;height:100%;background:#05080f;color:var(--ink);
+html,body{margin:0;height:100%;background:var(--carbon);color:var(--ink);
   font-family:system-ui,-apple-system,'Segoe UI',sans-serif;overflow:hidden;
   overscroll-behavior:none;-webkit-tap-highlight-color:transparent}
 #scene{touch-action:none}
@@ -23,29 +37,43 @@ html,body{margin:0;height:100%;background:#05080f;color:var(--ink);
 .gaps .v.close{color:var(--warn)}
 .tr{top:18px;right:18px;align-items:flex-end}
 .br{bottom:18px;right:18px}
-.panel{background:var(--panel);border:1px solid var(--edge);border-radius:12px;
-  padding:10px 14px;backdrop-filter:blur(14px);min-width:150px}
+.panel{background:var(--panel);background-image:var(--carbon-weave);
+  border:1px solid var(--edge);border-radius:11px;
+  padding:10px 14px;backdrop-filter:blur(14px);min-width:150px;
+  box-shadow:0 14px 30px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.04)}
+/* A thin crimson rule down the left of every readout: the one piece of livery
+   that ties the HUD together without colouring the data itself. */
+.panel{border-left:2px solid var(--edge-hot)}
 .row{display:flex;justify-content:space-between;align-items:baseline;gap:18px;line-height:1.75}
 .k{font-size:10px;letter-spacing:.14em;color:var(--dim)}
 .v{font-size:15px;font-weight:600}
-.v.dim{color:var(--dim)} .v.accent{color:var(--accent)}
+.v.dim{color:var(--dim)} .v.accent{color:var(--good)}
+.k{text-transform:uppercase}
 .times .v{font-size:14px}
-#minimap{background:var(--panel);border:1px solid var(--edge);border-radius:12px;
-  backdrop-filter:blur(14px);width:170px;height:170px}
+#minimap{background:var(--panel);border:1px solid var(--edge);border-radius:11px;
+  border-left:2px solid var(--edge-hot);
+  backdrop-filter:blur(14px);width:170px;height:170px;
+  box-shadow:0 14px 30px rgba(0,0,0,.45)}
 .env{min-width:170px}
 
 /* ---------- gauge ---------- */
  /* The dial needs its own ground, or the scene shows through the face. */
-.gauge{position:relative;width:262px;padding:12px 14px 10px;border-radius:18px;
-  background:var(--panel);border:1px solid var(--edge);backdrop-filter:blur(14px)}
+.gauge{position:relative;width:262px;padding:12px 14px 10px;border-radius:16px;
+  background:var(--panel);background-image:var(--carbon-weave);
+  border:1px solid var(--edge);backdrop-filter:blur(14px);
+  box-shadow:0 18px 40px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.05)}
+/* The one red line on the dial face: a rev limiter bar the eye can find. */
+.gauge::after{content:'';position:absolute;left:14px;right:14px;top:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--accent),transparent);opacity:.7}
 #gauge-svg{width:100%;height:auto;display:block;overflow:visible}
 .gauge-track{fill:none;stroke:rgba(125,139,163,.22);stroke-width:11;stroke-linecap:round}
 .gauge-fill{fill:none;stroke:var(--accent);stroke-width:11;stroke-linecap:round;
-  transition:stroke .25s linear}
+  filter:drop-shadow(0 0 6px rgba(224,27,36,.55));transition:stroke .25s linear}
 /* The rotation centre comes from the SVG transform attribute the HUD writes,
    so no CSS transform-box may override it. */
-.gauge-needle{stroke:var(--warn);stroke-width:3.5;stroke-linecap:round}
-.gauge-hub{fill:var(--warn)}
+.gauge-needle{stroke:var(--ink);stroke-width:3;stroke-linecap:round;
+  filter:drop-shadow(0 0 4px rgba(0,0,0,.8))}
+.gauge-hub{fill:var(--accent)}
 .tick{stroke:rgba(125,139,163,.55);stroke-width:2}
 .tick.major{stroke:rgba(200,220,245,.8);stroke-width:2.5}
 .tick-label{fill:var(--dim);font-size:12px;font-family:var(--font);text-anchor:middle;
@@ -53,9 +81,10 @@ html,body{margin:0;height:100%;background:#05080f;color:var(--ink);
 /* The readout sits under the dial: nothing can ever overlap the needle sweep. */
 .readout{display:flex;align-items:baseline;justify-content:center;gap:8px;
   margin-top:-14px;pointer-events:none}
-.speed{font-size:46px;font-weight:700;letter-spacing:-.03em;line-height:1}
+.speed{font-family:var(--display);font-size:52px;font-weight:700;
+  letter-spacing:.01em;line-height:1}
 .unit{font-size:9px;letter-spacing:.22em;color:var(--dim)}
-.gear-badge{margin-left:6px;font-size:20px;font-weight:700;color:var(--accent);
+.gear-badge{margin-left:6px;font-size:20px;font-weight:700;color:var(--ink);
   background:var(--panel);border:1px solid var(--edge);border-radius:9px;
   padding:2px 10px;backdrop-filter:blur(10px)}
 /* The boost control is on screen on every device: nobody should have to be
@@ -155,7 +184,7 @@ html,body{margin:0;height:100%;background:#05080f;color:var(--ink);
   font-size:11px;font-weight:700;text-decoration:underline;text-underline-offset:3px}
 
 /* ---------- career panel ---------- */
-.career{grid-column:1;grid-row:3;align-self:end;max-width:520px}
+.career{max-width:none;margin-bottom:10px}
 .tiles{display:flex;flex-wrap:wrap;gap:7px}
 .tile{flex:1 1 84px;min-width:78px;padding:7px 10px;border-radius:11px;
   background:var(--panel);border:1px solid var(--edge);backdrop-filter:blur(14px)}
@@ -172,7 +201,7 @@ html,body{margin:0;height:100%;background:#05080f;color:var(--ink);
   color:#ffc94d}
 .badge .dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.6}
 .badge.earned .dot{opacity:1}
-@media (max-width:760px){.career{display:none}}
+
 
 /* ---------- sheets: multiplayer flow and settings ---------- */
 .sheet{position:absolute;inset:0;display:grid;place-items:center;z-index:5;
@@ -240,23 +269,87 @@ input[type="range"]::-moz-range-track{background:transparent}
 /* The menu is a layer over the live scene, not a box in front of it: the left
    of the screen stays clear so the preview of the current selection is what
    the player is looking at while they choose. */
+/* The menu is a layer over the live scene: brand and navigation down the left,
+   the car on show in the middle, its figures along the bottom, and the setup
+   on the right. Nothing covers the middle of the screen, because the middle of
+   the screen is the car. */
 #menu.stage{position:absolute;inset:0;display:grid;
-  grid-template-columns:minmax(0,1fr) min(400px,42vw);
-  grid-template-rows:auto 1fr auto;
-  gap:14px 20px;
+  grid-template-columns:minmax(0,190px) minmax(0,1fr) min(410px,42vw);
+  grid-template-rows:auto minmax(0,1fr) auto;
+  gap:14px 22px;
   padding:calc(20px + env(safe-area-inset-top,0px)) 20px
           calc(16px + env(safe-area-inset-bottom,0px));
-  background:linear-gradient(90deg,rgba(3,6,12,.18) 0%,rgba(3,6,12,.5) 55%,rgba(3,6,12,.82) 100%);
+  background:
+    radial-gradient(120% 90% at 8% 10%,rgba(224,27,36,.10),transparent 60%),
+    linear-gradient(90deg,rgba(4,4,6,.66) 0%,rgba(4,4,6,.22) 34%,rgba(4,4,6,.86) 100%);
   pointer-events:none}
 #menu.stage > *{pointer-events:auto}
-.stage-head{grid-column:1;grid-row:1;align-self:start}
-.stage-now{margin:8px 0 0;font-size:12px;color:var(--dim);letter-spacing:.02em;
-  text-shadow:0 2px 14px rgba(0,0,0,.7);max-width:44ch}
+.stage-head{grid-column:1 / span 2;grid-row:1;align-self:start}
+.stage-now{margin:8px 0 0;font-size:11px;color:var(--dim);letter-spacing:.06em;
+  text-transform:uppercase;text-shadow:0 2px 14px rgba(0,0,0,.8);max-width:52ch}
 .stage-now b{color:var(--ink);font-weight:700}
 
-.panel-card{grid-column:2;grid-row:1 / span 3;display:flex;flex-direction:column;gap:12px;
-  min-height:0;background:var(--panel);border:1px solid var(--edge);border-radius:18px;
-  padding:16px;backdrop-filter:blur(20px);box-shadow:0 30px 80px rgba(0,0,0,.55)}
+/* Navigation: a stack of flat plates, the live one lit down its left edge. */
+.rail{grid-column:1;grid-row:2;display:flex;flex-direction:column;gap:6px;
+  align-self:start;min-width:0}
+.rail-btn{position:relative;text-align:left;padding:11px 12px 11px 14px;cursor:pointer;
+  font-family:var(--display);font-size:15px;font-weight:700;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--dim);
+  background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.015));
+  border:1px solid var(--edge);border-left:2px solid transparent;border-radius:3px;
+  transition:color .16s,border-color .16s,background .16s,transform .16s}
+.rail-btn:hover{color:var(--ink);transform:translateX(2px)}
+.rail-btn[aria-pressed="true"]{color:var(--ink);border-left-color:var(--accent);
+  background:linear-gradient(90deg,rgba(224,27,36,.22),rgba(255,255,255,.02) 60%)}
+.rail-btn[aria-pressed="true"]::after{content:'';position:absolute;right:10px;top:50%;
+  width:5px;height:5px;margin-top:-2px;border-radius:50%;background:var(--accent);
+  box-shadow:0 0 10px var(--accent-hot)}
+
+/* The car's own read-out, along the bottom of the stage. */
+.spec{grid-column:2;grid-row:3;align-self:end;max-width:520px;
+  animation:rise .4s ease-out backwards}
+.spec-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.spec-head h2{margin:0;font-family:var(--display);font-size:40px;font-weight:700;
+  letter-spacing:.02em;text-transform:uppercase;line-height:.95;
+  text-shadow:0 4px 24px rgba(0,0,0,.8)}
+.spec-class{font-family:var(--font);font-size:10px;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--accent-hot)}
+.spec-bars{display:grid;grid-template-columns:repeat(4,minmax(0,116px));gap:10px;
+  margin:12px 0 8px}
+.spec-bar span{display:block;font-family:var(--font);font-size:9px;letter-spacing:.16em;
+  color:var(--dim);text-transform:uppercase;margin-bottom:5px}
+.spec-bar i{display:block;height:4px;border-radius:2px;background:rgba(255,255,255,.12);
+  overflow:hidden}
+.spec-bar i b{display:block;height:100%;width:0;border-radius:2px;
+  background:linear-gradient(90deg,var(--accent-deep),var(--accent-hot));
+  transition:width .5s cubic-bezier(.2,.8,.2,1)}
+/* A figure rather than a bar, for the numbers that are not a share of
+   anything: a lap length, a corner count. */
+.spec-figure{display:block;font-family:var(--display);font-size:22px;font-weight:700;
+  letter-spacing:.02em;color:var(--ink);line-height:1}
+.spec-blurb{margin:0;font-size:12px;line-height:1.5;color:var(--dim);max-width:46ch;
+  text-shadow:0 2px 12px rgba(0,0,0,.8)}
+@keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+@media (max-width:1100px){.spec-bars{grid-template-columns:repeat(2,minmax(0,116px))}
+  .spec-head h2{font-size:30px}.spec-blurb{display:none}}
+
+.panel-card{grid-column:3;grid-row:1 / span 3;display:flex;flex-direction:column;gap:12px;
+  min-height:0;background:var(--panel);background-image:var(--carbon-weave);
+  border:1px solid var(--edge);border-radius:6px;
+  padding:16px;backdrop-filter:blur(20px);
+  box-shadow:0 30px 90px rgba(0,0,0,.7),inset 0 1px 0 rgba(255,255,255,.05);
+  animation:panel-in .34s cubic-bezier(.2,.8,.2,1) backwards}
+/* A crimson scan across the top of the panel: the one animated flourish. */
+.panel-card::before{content:'';position:absolute;inset:0 0 auto;height:1px;
+  background:linear-gradient(90deg,transparent,var(--accent-hot),transparent);
+  animation:scan 5.5s ease-in-out infinite;pointer-events:none}
+.panel-card{position:relative;overflow:hidden}
+@keyframes panel-in{from{opacity:0;transform:translateX(26px)}to{opacity:1;transform:none}}
+@keyframes scan{0%,100%{opacity:.15;transform:translateY(0)}
+  50%{opacity:.9;transform:translateY(2px)}}
+.panel-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.panel-title{font-family:var(--display);font-size:13px;font-weight:700;letter-spacing:.24em;
+  text-transform:uppercase;color:var(--dim)}
 /* Only the pickers scroll. The buttons are always on screen. */
 .setup{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;
   padding-right:8px;margin-right:-4px}
@@ -289,14 +382,21 @@ input[type="range"]::-moz-range-track{background:transparent}
   backdrop-filter:blur(20px);box-shadow:0 30px 80px rgba(0,0,0,.6)}
 h2{margin:0 0 14px;font-size:26px;letter-spacing:-.01em}
 .field{margin-bottom:12px}
-label{display:block;font-size:9.5px;letter-spacing:.15em;color:var(--dim);margin-bottom:6px}
+label{display:block;font-family:var(--font);font-size:9px;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--dim);margin-bottom:6px}
 .opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(60px,1fr));gap:6px}
 .opt{position:relative;display:flex;flex-direction:column;align-items:center;gap:4px;
-  padding:7px 4px 6px;border-radius:11px;cursor:pointer;background:rgba(255,255,255,.045);
+  padding:7px 4px 6px;border-radius:4px;cursor:pointer;
+  background:linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.015));
   border:1px solid var(--edge);color:var(--dim);transition:.16s}
-.opt:hover{background:rgba(255,255,255,.09);color:var(--ink)}
-.opt[aria-pressed="true"]{background:rgba(77,227,176,.09);border-color:var(--accent);
-  color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 8px 20px rgba(0,0,0,.38)}
+.opt:hover{background:rgba(255,255,255,.1);color:var(--ink);transform:translateY(-1px)}
+.opt[aria-pressed="true"]{color:var(--ink);border-color:var(--accent);
+  background:linear-gradient(180deg,rgba(224,27,36,.24),rgba(224,27,36,.07));
+  box-shadow:0 0 0 1px var(--accent),0 10px 24px rgba(0,0,0,.5)}
+/* Live selection carries a lit corner rather than a glow around the whole
+   plate: it reads at a glance without washing the panel in red. */
+.opt[aria-pressed="true"]::before{content:'';position:absolute;left:0;top:0;
+  border-top:7px solid var(--accent-hot);border-right:7px solid transparent}
 .opt[aria-pressed="true"] .nm{color:var(--ink)}
 .opt-icon{width:34px;height:23px;display:block}
 .opt-shot{width:100%;max-width:82px;height:auto;display:block;border-radius:7px;
@@ -318,7 +418,8 @@ label{display:block;font-size:9.5px;letter-spacing:.15em;color:var(--dim);margin
 .logo{width:min(300px,52vw);height:auto;display:block}
 .logo-word{font-family:system-ui,-apple-system,sans-serif;font-size:38px;font-weight:800;
   letter-spacing:-.02em;fill:var(--ink)}
-.logo-word.accent{fill:var(--accent)}
+.logo-word{font-family:var(--display);letter-spacing:.04em}
+.logo-word.accent{fill:var(--accent-hot)}
 .logo-sub{font-family:var(--font);font-size:10.5px;letter-spacing:.26em;fill:var(--dim)}
 
 input#name,input.code-field{width:100%;padding:9px 12px;border-radius:10px;font-size:13.5px;
@@ -342,37 +443,78 @@ input.code-field{margin-bottom:8px;font-family:var(--font);font-size:12.5px}
 .players .me{color:var(--accent)}
 .players .tick{font-size:9.5px;letter-spacing:.1em;color:var(--dim)}
 .players .tick.on{color:var(--accent)}
-#start,#again,button.ghost{width:100%;padding:13px;border:0;border-radius:11px;cursor:pointer;
-  background:var(--accent);color:#04120d;font-size:13px;font-weight:800;letter-spacing:.09em}
-#start:hover,#again:hover,button.ghost:hover{filter:brightness(1.1)}
-button.ghost{background:rgba(255,255,255,.07);color:var(--ink);border:1px solid var(--edge)}
-button.ghost[aria-pressed="true"]{background:var(--accent);color:#04120d}
+/* The main action is the only filled crimson control on the screen. */
+#start,#again,button.ghost{position:relative;width:100%;padding:14px;border:0;
+  border-radius:4px;cursor:pointer;font-family:var(--display);font-size:16px;
+  font-weight:700;letter-spacing:.16em;text-transform:uppercase;
+  background:linear-gradient(180deg,var(--accent-hot),var(--accent-deep));
+  color:#fff;box-shadow:0 10px 26px rgba(224,27,36,.28),inset 0 1px 0 rgba(255,255,255,.22);
+  transition:box-shadow .2s,transform .12s,filter .2s}
+#start:hover,#again:hover{box-shadow:0 14px 40px rgba(255,58,63,.5),
+  inset 0 1px 0 rgba(255,255,255,.3);transform:translateY(-1px)}
+#start:active,#again:active{transform:translateY(1px)}
+/* Room either side so the keyboard hint never sits on the label. */
+#start{padding-left:58px;padding-right:58px}
+/* A touch device has no Enter key, so it does not get the hint — or the room
+   the hint was taking out of the label. */
+@media (pointer:coarse){#start kbd{display:none}#start{padding-left:16px;padding-right:16px}}
+#start kbd,#again kbd{position:absolute;right:12px;top:50%;transform:translateY(-50%);
+  background:rgba(0,0,0,.34);border:0;color:rgba(255,255,255,.72);font-size:9px;
+  letter-spacing:.12em}
+button.ghost{background:linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.02));
+  color:var(--ink);border:1px solid var(--edge);font-size:12px;letter-spacing:.14em;
+  box-shadow:none}
+button.ghost:hover{border-color:var(--edge-hot);color:#fff}
+button.ghost[aria-pressed="true"]{background:linear-gradient(180deg,var(--accent-hot),
+  var(--accent-deep));border-color:transparent;color:#fff}
 .keys{list-style:none;display:flex;flex-wrap:wrap;gap:5px 12px;margin:10px 0 0;padding:0;
   font-size:10.5px;color:var(--dim)}
 kbd{background:rgba(255,255,255,.08);border:1px solid var(--edge);border-radius:5px;
   padding:2px 6px;margin-right:3px;font-family:var(--font);font-size:10px}
-#loading{position:absolute;inset:0;display:grid;place-items:center;background:#05080f;
-  color:var(--dim);font-size:13px;letter-spacing:.2em;text-transform:uppercase}
 [hidden]{display:none!important}
 
 /* Narrow screens stack: preview on top, controls beneath it. */
-@media (max-width:760px){
-  #menu.stage{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr);
-    gap:10px;padding:calc(12px + env(safe-area-inset-top,0px)) 12px
-    calc(12px + env(safe-area-inset-bottom,0px));
-    background:linear-gradient(180deg,rgba(3,6,12,.25) 0%,rgba(3,6,12,.55) 34%,rgba(3,6,12,.9) 100%)}
+/* Tablet: the rail loses its labels' room, so it runs along the top instead of
+   down the side, and the panel takes the rest. */
+@media (max-width:1000px) and (min-width:761px){
+  #menu.stage{grid-template-columns:minmax(0,1fr) min(380px,46vw);
+    grid-template-rows:auto auto minmax(0,1fr) auto}
   .stage-head{grid-column:1;grid-row:1}
-  .panel-card{grid-column:1;grid-row:2;padding:13px}
-  .career{display:none}
-  .stage-now{font-size:11px;margin-top:5px}
+  .rail{grid-column:1;grid-row:2;flex-direction:row;flex-wrap:wrap}
+  .rail-btn{flex:1 1 auto;font-size:12px;padding:9px 10px}
+  .spec{grid-column:1;grid-row:4}
+  .panel-card{grid-column:2;grid-row:1 / span 4}
+}
+/* Phone: everything stacks. The navigation is a scrolling strip of tabs, the
+   car keeps the top third of the screen, and the action stays reachable with
+   a thumb. */
+@media (max-width:760px){
+  #menu.stage{grid-template-columns:1fr;grid-template-rows:auto auto minmax(0,1fr);
+    gap:9px;padding:calc(12px + env(safe-area-inset-top,0px)) 12px
+    calc(12px + env(safe-area-inset-bottom,0px));
+    background:linear-gradient(180deg,rgba(4,4,6,.3) 0%,rgba(4,4,6,.6) 30%,rgba(4,4,6,.94) 100%)}
+  .stage-head{grid-column:1;grid-row:1}
+  .rail{grid-column:1;grid-row:2;flex-direction:row;gap:5px;overflow-x:auto;
+    scrollbar-width:none;padding-bottom:2px}
+  .rail::-webkit-scrollbar{display:none}
+  .rail-btn{flex:0 0 auto;font-size:12px;padding:8px 12px;letter-spacing:.08em}
+  /* The panel takes the lower part of the screen so the car still has the top
+     of it; it scrolls inside that. */
+  .panel-card{grid-column:1;grid-row:3;padding:13px;border-radius:4px;
+    align-self:end;max-height:64vh}
+  .spec{display:none}
+  .stage-now{font-size:10px;margin-top:5px}
+  #start{font-size:14px;padding:15px}
 }
 @media (max-width:460px){.grid-2{grid-template-columns:1fr;gap:0}}
 
 /* ---------- scoreboard ---------- */
 .board{position:relative;overflow:hidden}
-.board-eyebrow{margin:0 0 4px;font-size:10px;letter-spacing:.24em;color:var(--dim);
+.board-eyebrow{margin:0 0 4px;font-family:var(--font);font-size:10px;letter-spacing:.24em;
+  text-transform:uppercase;color:var(--accent-hot);
   animation:board-rise .4s ease-out backwards}
-.board h2{margin:0 0 6px;font-size:34px;letter-spacing:-.02em;
+.board h2{margin:0 0 6px;font-family:var(--display);font-size:40px;font-weight:700;
+  letter-spacing:.02em;text-transform:uppercase;
   animation:board-rise .45s ease-out .05s backwards}
 .board-sub{margin:0 0 20px;font-size:13px;color:var(--dim);
   animation:board-rise .45s ease-out .1s backwards}
@@ -380,12 +522,12 @@ kbd{background:rgba(255,255,255,.08);border:1px solid var(--edge);border-radius:
   flex-direction:column;gap:7px}
 .board-row{position:relative;display:grid;
   grid-template-columns:34px 10px 1fr auto;align-items:center;gap:10px;
-  padding:11px 13px;border-radius:12px;background:rgba(255,255,255,.045);
+  padding:11px 13px;border-radius:4px;background:rgba(255,255,255,.045);
   border:1px solid var(--edge);overflow:hidden;
   animation:row-in .42s cubic-bezier(.2,.8,.3,1) backwards;
   animation-delay:calc(.18s + var(--i) * .09s)}
 .board-row .bar{position:absolute;inset:0;transform-origin:left;
-  background:linear-gradient(90deg,rgba(77,227,176,.22),rgba(77,227,176,0));
+  background:linear-gradient(90deg,rgba(255,255,255,.1),rgba(255,255,255,0));
   animation:bar-fill .7s ease-out backwards;animation-delay:calc(.3s + var(--i) * .09s)}
 .board-row > *{position:relative}
 .board-row .pl{font-family:var(--font);font-size:15px;font-weight:700;color:var(--dim)}
@@ -393,11 +535,15 @@ kbd{background:rgba(255,255,255,.08);border:1px solid var(--edge);border-radius:
 .board-row .nm{font-weight:700;font-size:14px}
 .board-row .tm{font-family:var(--font);font-size:13px;color:var(--dim);text-align:right}
 .board-row .tm small{display:block;font-size:10px;letter-spacing:.08em;opacity:.75}
-.board-row.you{border-color:var(--accent);background:rgba(77,227,176,.1)}
-.board-row.you .nm{color:var(--accent)}
-.board-row.win .pl{color:#ffc94d}
-.board-row.win{border-color:rgba(255,201,77,.5)}
-.board-row.win .bar{background:linear-gradient(90deg,rgba(255,201,77,.28),rgba(255,201,77,0))}
+/* The reader's own row is the crimson one; the winner's is the lit one. */
+.board-row.you{border-color:var(--accent);
+  background:linear-gradient(90deg,rgba(224,27,36,.16),rgba(224,27,36,.04))}
+.board-row.you .nm{color:#fff}
+.board-row.you .pl{color:var(--accent-hot)}
+.board-row.win{border-color:rgba(255,255,255,.4)}
+.board-row.win .pl{color:#fff}
+.board-row.win .bar{background:linear-gradient(90deg,rgba(255,255,255,.22),rgba(255,255,255,0))}
+.board-row.win.you .bar{background:linear-gradient(90deg,rgba(255,58,63,.34),rgba(255,58,63,0))}
 @keyframes row-in{from{opacity:0;transform:translateY(14px) scale(.98)}}
 @keyframes bar-fill{from{transform:scaleX(0)}}
 @keyframes board-rise{from{opacity:0;transform:translateY(10px)}}
@@ -426,7 +572,14 @@ kbd{background:rgba(255,255,255,.08);border:1px solid var(--edge);border-radius:
   12%{opacity:1}
   100%{opacity:0;transform:translateY(420px) rotate(680deg)}}
 
-#loading{position:absolute;inset:0;display:grid;place-items:center;background:#05080f;
+/* Development read-out: plain, dense, and out of the way of the racing line. */
+#debug{position:absolute;left:18px;bottom:18px;margin:0;padding:10px 12px;
+  font-family:var(--font);font-size:10.5px;line-height:1.5;white-space:pre;
+  color:#9fe8d4;background:rgba(4,5,8,.84);border:1px solid var(--edge);
+  border-left:2px solid #00ffcc;border-radius:4px;pointer-events:none;z-index:5}
+@media (max-width:760px){#debug{font-size:9px;left:10px;bottom:10px}}
+
+#loading{position:absolute;inset:0;display:grid;place-items:center;background:var(--carbon);
   color:var(--dim);font-size:13px;letter-spacing:.2em;text-transform:uppercase}
 [hidden]{display:none!important}
 @media (max-width:640px){
@@ -547,3 +700,122 @@ body.touch-ui #toast{top:38%}
 .pit-btn .cone{font-size:9px}
 .mini.pit{color:var(--accent);border-color:rgba(77,227,176,.42);flex:none;padding:10px 6px}
 body.touch-ui .pit-btn{display:none}
+
+/* ---------- boot sequence ---------- */
+/* Dark garage, carbon, one red light travelling across it. The car behind is
+   the game's own scene, so this layer is mostly transparent in the middle:
+   everything sits at the top and bottom of the screen and leaves the reveal
+   alone. */
+#boot{position:fixed;inset:0;z-index:20;display:grid;
+  grid-template-rows:auto minmax(0,1fr) auto;
+  padding:calc(30px + env(safe-area-inset-top,0px)) 26px
+          calc(26px + env(safe-area-inset-bottom,0px));
+  background:
+    radial-gradient(120% 80% at 50% 0%,rgba(224,27,36,.14),transparent 62%),
+    radial-gradient(90% 70% at 50% 108%,rgba(224,27,36,.10),transparent 60%),
+    linear-gradient(180deg,#07080a 0%,#0a0b0e 40%,#050507 100%);
+  transition:opacity .36s ease,transform .36s ease}
+#boot.with-car{background:
+    radial-gradient(120% 60% at 50% 0%,rgba(224,27,36,.16),transparent 60%),
+    linear-gradient(180deg,rgba(7,8,10,.96) 0%,rgba(7,8,10,.35) 38%,
+      rgba(5,5,7,.55) 66%,rgba(5,5,7,.97) 100%)}
+#boot.out{opacity:0;transform:scale(1.02);pointer-events:none}
+
+.boot-grain{position:absolute;inset:0;opacity:.5;pointer-events:none;
+  background-image:var(--carbon-weave);background-size:6px 6px}
+/* Light streaks: a few slow diagonals, the width of a hair. */
+.boot-streaks{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+.boot-streaks i{position:absolute;top:-30%;left:var(--x,20%);width:1px;height:160%;
+  background:linear-gradient(180deg,transparent,rgba(255,90,96,.5),transparent);
+  transform:rotate(14deg);animation:streak 7s linear infinite;opacity:.5}
+.boot-streaks i:nth-child(1){--x:18%;animation-delay:0s}
+.boot-streaks i:nth-child(2){--x:38%;animation-delay:1.7s}
+.boot-streaks i:nth-child(3){--x:64%;animation-delay:3.1s}
+.boot-streaks i:nth-child(4){--x:82%;animation-delay:4.6s}
+@keyframes streak{0%{transform:translateY(-40%) rotate(14deg);opacity:0}
+  18%{opacity:.5}82%{opacity:.5}100%{transform:translateY(40%) rotate(14deg);opacity:0}}
+/* The scanning light: one red line that crosses the screen and comes back. */
+.boot-scan{position:absolute;left:0;right:0;top:0;height:2px;pointer-events:none;
+  background:linear-gradient(90deg,transparent,rgba(255,58,63,.75),transparent);
+  animation:boot-scan 4.6s ease-in-out infinite}
+@keyframes boot-scan{0%{transform:translateY(12vh);opacity:0}
+  12%{opacity:.9}50%{transform:translateY(86vh);opacity:.9}
+  62%{opacity:0}100%{transform:translateY(12vh);opacity:0}}
+
+.boot-centre{grid-row:1;justify-self:center;text-align:center;position:relative}
+.boot-logo .logo{width:min(420px,72vw)}
+.boot-tagline{margin:10px 0 0;font-family:var(--font);font-size:11px;letter-spacing:.42em;
+  text-transform:uppercase;color:var(--dim);
+  animation:boot-fade .9s ease-out .25s backwards}
+#boot.brief .boot-tagline{animation:none}
+@keyframes boot-fade{from{opacity:0;letter-spacing:.7em}to{opacity:1}}
+
+.boot-foot{grid-row:3;width:min(720px,100%);justify-self:center;position:relative}
+.boot-line{display:flex;justify-content:space-between;align-items:baseline;
+  font-family:var(--font);font-size:11px;letter-spacing:.2em;text-transform:uppercase}
+.boot-status{color:var(--ink)}
+.boot-pct{color:var(--accent-hot);font-variant-numeric:tabular-nums}
+.boot-bar{position:relative;height:3px;margin:9px 0 14px;border-radius:2px;
+  background:rgba(255,255,255,.1);overflow:hidden}
+.boot-bar i{display:block;height:100%;width:0;border-radius:2px;
+  background:linear-gradient(90deg,var(--accent-deep),var(--accent-hot));
+  box-shadow:0 0 12px rgba(255,58,63,.6);transition:width .32s cubic-bezier(.2,.8,.2,1)}
+/* Telemetry: one row per system, in the mono face the HUD uses. */
+.boot-rows{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px 22px;
+  font-family:var(--font);font-size:10px;letter-spacing:.14em;text-transform:uppercase}
+.boot-row{display:flex;justify-content:space-between;gap:10px;color:var(--dim);
+  border-bottom:1px solid rgba(255,255,255,.06);padding-bottom:3px}
+.boot-row b{font-weight:600;color:rgba(255,255,255,.35)}
+.boot-row.ready b{color:var(--good)}
+
+/* Race ready: the bar goes white-hot, then a sweep of red crosses the screen
+   as the headlights come on. */
+#boot.ready .boot-bar i{background:linear-gradient(90deg,var(--accent-hot),#fff)}
+#boot.ready .boot-status{color:var(--accent-hot)}
+#boot.sweep::after{content:'';position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(105deg,transparent 38%,rgba(255,58,63,.5) 48%,
+    rgba(255,255,255,.85) 52%,rgba(255,58,63,.5) 56%,transparent 66%);
+  animation:boot-sweep .52s ease-in forwards}
+@keyframes boot-sweep{from{transform:translateX(-120%)}to{transform:translateX(120%)}}
+
+.boot-error{position:absolute;inset:auto 0 32%;margin:auto;width:min(420px,86vw);
+  padding:20px;text-align:center;background:rgba(10,11,14,.94);
+  border:1px solid var(--edge-hot);border-radius:6px}
+.boot-error h3{margin:0 0 8px;font-family:var(--display);font-size:20px;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--accent-hot)}
+.boot-error p{margin:0 0 16px;font-size:12px;line-height:1.5;color:var(--dim)}
+#boot-retry{padding:10px 26px;border:0;border-radius:4px;cursor:pointer;
+  font-family:var(--display);font-size:14px;font-weight:700;letter-spacing:.16em;
+  text-transform:uppercase;color:#fff;
+  background:linear-gradient(180deg,var(--accent-hot),var(--accent-deep))}
+#boot.failed .boot-scan,#boot.failed .boot-streaks{display:none}
+
+@media (max-width:760px){
+  #boot{padding:calc(22px + env(safe-area-inset-top,0px)) 16px
+        calc(18px + env(safe-area-inset-bottom,0px))}
+  /* A phone does not need four animated streaks over a 3D reveal. */
+  .boot-streaks{display:none}
+  .boot-rows{grid-template-columns:repeat(2,minmax(0,1fr));font-size:9px}
+  .boot-tagline{font-size:9px;letter-spacing:.3em}
+}
+@media (prefers-reduced-motion:reduce){
+  .boot-scan,.boot-streaks i{animation:none;opacity:.25}
+}
+
+/* The menu is built behind the boot screen and arrives as it leaves: the rail
+   slides in a plate at a time, the panel from the right, the car's figures up
+   from the bottom. */
+body.booting #menu{opacity:0;pointer-events:none}
+#menu{transition:opacity .4s ease}
+body:not(.booting) .rail-btn{animation:rail-in .38s cubic-bezier(.2,.8,.2,1) backwards}
+.rail-btn:nth-child(1){animation-delay:.02s}
+.rail-btn:nth-child(2){animation-delay:.06s}
+.rail-btn:nth-child(3){animation-delay:.10s}
+.rail-btn:nth-child(4){animation-delay:.14s}
+.rail-btn:nth-child(5){animation-delay:.18s}
+.rail-btn:nth-child(6){animation-delay:.22s}
+@keyframes rail-in{from{opacity:0;transform:translateX(-16px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){
+  body:not(.booting) .rail-btn{animation:none}
+  .panel-card{animation:none}
+}

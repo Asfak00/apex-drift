@@ -75,19 +75,19 @@ export const BOOST = {
 export const VISIONS = {
   day:    { name:'Day',     sky:0x87b6e8, horizon:0xd8e6f4, sun:[0.45,0.85,0.30], sunColor:0xfff4e0,
             sunI:2.4, ambient:0xc8dcf0, ambI:1.05, fog:0xbcd4ec, fogNear:120, fogFar:620,
-            groundTint:0x4a6b48, lights:false, exposure:1.0 },
+            groundTint:0x4a6b48, lights:false, exposure:1.0, clouds:0.18 },
   sunset: { name:'Sunset',  sky:0xff9a52, horizon:0xffd9a0, sun:[-0.85,0.16,0.38], sunColor:0xffb066,
             sunI:2.8, ambient:0xff9e78, ambI:0.72, fog:0xffae74, fogNear:80, fogFar:480,
-            groundTint:0x5c5238, lights:true, exposure:1.05 },
+            groundTint:0x5c5238, lights:true, exposure:1.05, clouds:0.30 },
   dusk:   { name:'Dusk',    sky:0x2c3e70, horizon:0x7b6ba8, sun:[-0.6,0.1,0.5], sunColor:0x8fa6ff,
-            sunI:1.0, ambient:0x4a5a90, ambI:0.6, fog:0x3a4a78, fogNear:60, fogFar:400,
-            groundTint:0x2e3a48, lights:true, exposure:1.15 },
-  night:  { name:'Night',   sky:0x050a18, horizon:0x101d38, sun:[0.3,0.7,-0.4], sunColor:0x6f86c4,
-            sunI:0.28, ambient:0x243356, ambI:0.34, fog:0x070d1c, fogNear:35, fogFar:260,
-            groundTint:0x14202e, lights:true, exposure:1.35 },
+            sunI:1.1, ambient:0x5a6aa0, ambI:0.72, fog:0x3a4a78, fogNear:60, fogFar:400,
+            groundTint:0x2e3a48, lights:true, exposure:1.15, clouds:0.26 },
+  night:  { name:'Night',   sky:0x070e20, horizon:0x16253f, sun:[0.3,0.7,-0.4], sunColor:0x8ea0d8,
+            sunI:0.42, ambient:0x2e3f66, ambI:0.5, fog:0x0a1122, fogNear:45, fogFar:300,
+            groundTint:0x14202e, lights:true, exposure:1.35, clouds:0.12 },
   neon:   { name:'Neon',    sky:0x160a2e, horizon:0x4a1d6b, sun:[0.2,0.5,0.6], sunColor:0xff4fd8,
             sunI:0.9, ambient:0x5a2a8c, ambI:0.8, fog:0x2a0f45, fogNear:45, fogFar:330,
-            groundTint:0x1e1038, lights:true, exposure:1.25 },
+            groundTint:0x1e1038, lights:true, exposure:1.25, clouds:0.34 },
 };
 
 // Weather changes grip, visibility and particle field. Stacks on top of any vision.
@@ -131,6 +131,12 @@ export const PIT = {
 };
 
 export const CAMERAS = ['chase', 'hood', 'cinematic'];
+
+// Where the sealed surface sits above the centreline, and how far above that
+// the paint on it sits. Both the track mesh and the cars measure from these,
+// so a wheel rests on the same plane the asphalt is drawn at.
+export const ROAD_SURFACE = 0.05;
+export const PAINT_LIFT = 0.012;
 
 // Physics runs on a fixed step and the renderer interpolates between them, so
 // frame rate never changes how a car handles.
@@ -220,7 +226,8 @@ export const TRACKS = {
     name: 'Canyon Run',
     crowd: 0.12,
     blurb: 'Narrow concrete ledge cut through rock. Tight, fast, and there is nowhere to put a mistake.',
-    surface: 'concrete', roadHalf: 11.5, grip: 0.95, barriers: 'concrete', music: 'desert', bank: [6.2, 2.8],
+    surface: 'concrete', roadHalf: 11.5, grip: 0.95, barriers: 'concrete', music: 'desert',
+    bank: [6.2, 2.8], scenery: 'canyon',
     road: 0x4a4e55, ground: 0x6b5340, hills: 0x7a5c44, kerbs: false,
     points: [
       [0, -200], [150, -190], [235, -120], [225, -20], [140, 25], [55, 80],
@@ -275,7 +282,7 @@ export const TRACKS = {
     name: 'Dock Quarter',
     crowd: 0.35,
     blurb: 'Twelve corners and barely a straight. Left, right, left again — the circuit never lets you settle.',
-    surface: 'asphalt', roadHalf: 10.5, grip: 0.96, bank: [0, 0], scenery: 'town',
+    surface: 'asphalt', roadHalf: 10.5, grip: 0.96, bank: [0, 0], scenery: 'industrial',
     barriers: 'concrete', music: 'street',
     road: 0x30343c, ground: 0x474d55, hills: 0x3a4049, kerbs: true,
     // Eight rights and four lefts make the 360, and the axis lengths cancel,
@@ -314,7 +321,8 @@ export const TRACKS = {
     name: 'Harbour Mile',
     crowd: 0.45, stands: [[0.86, 0.14]],
     blurb: 'A short street loop of long straights and square corners. Heavy braking, hard on tyres.',
-    surface: 'asphalt', roadHalf: 13.0, grip: 0.98, barriers: 'concrete', music: 'street', bank: [0.8, 0.4],
+    surface: 'asphalt', roadHalf: 13.0, grip: 0.98, barriers: 'concrete', music: 'street',
+    bank: [0.8, 0.4], scenery: 'town',
     road: 0x24272e, ground: 0x2f3742, hills: 0x39424f, kerbs: true,
     points: [
       [0, -180], [170, -180], [200, -145], [200, 80], [170, 115], [-40, 115],

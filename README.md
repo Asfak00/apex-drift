@@ -35,6 +35,20 @@ Whatever you pick, the only requirements are already handled: the server reads
 room and player count. Over HTTPS the client automatically opens a secure
 `wss://` socket, so nothing needs changing for a real domain.
 
+## Controls
+
+WASD or the arrow keys drive, Shift boosts, Space is the handbrake. `C` changes
+camera, `V` the time of day, `B` the weather, `M` mutes, `R` puts the car back
+on the circuit, Esc returns to the menu. Tyres are `1`, `2` and `3`; `T` calls a
+pit stop and `P` hands the car to the pit lane. Enter drops the flag from the
+menu.
+
+`F3` opens the development view: the centreline, the road edges, the outer
+limit of the verge on each side, every collision circle, the sun's shadow
+camera, and a read-out of draw calls, triangles, where the car is and what the
+ground under it is doing. It is off until it is asked for and costs nothing
+while it is off.
+
 Optional environment variables:
 
 - `APEX_CODE` — require a join code. Worth setting for a public deployment.

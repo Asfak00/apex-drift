@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { CAR, PALETTE, CHASSIS, BOOST, PIT } from './config.js';
+import { treadMaps } from './textures.js';
+import { CAR, PALETTE, CHASSIS, BOOST, PIT, ROAD_SURFACE } from './config.js';
 import { TyreSet } from './tyres.js';
 
 // A chassis only ever scales the shared baseline, so every variant stays on the
@@ -41,7 +42,6 @@ function tyreForce(slip, maxForce, tune) {
 
 // The road ribbon is drawn a few centimetres proud of the centreline, and the
 // wheels have to stand on that, not on the centreline itself.
-const ROAD_SURFACE = 0.05;
 
 const lerp = (a, b, t) => a + (b - a) * t;
 const smooth = (t) => t * t * (3 - 2 * t);
@@ -497,11 +497,26 @@ export function buildBody(color, body, chassis = null) {
     roughness: 0.7, side: THREE.DoubleSide,
   });
 
-  const rubber = new THREE.MeshStandardMaterial({ color: 0x0b0e13, roughness: 0.96 });
+  // Rubber with tread: the pattern is cut into the carcass rather than
+  // painted on, so a turning wheel reads as a tyre and not as a cylinder.
+  const tread = treadMaps();
+  const rubber = new THREE.MeshStandardMaterial({
+    color: 0x24272d, roughness: 0.93, metalness: 0,
+    map: tread.map, normalMap: tread.normalMap,
+    normalScale: new THREE.Vector2(0.9, 0.9),
+  });
   const rimMat = new THREE.MeshStandardMaterial({
     color: 0xc2ccd8, metalness: 1, roughness: 0.18, envMapIntensity: 1.6,
   });
-  const discMat = new THREE.MeshStandardMaterial({ color: 0x3b4149, metalness: 0.9, roughness: 0.45 });
+  // Discs glow when they are being used. The material belongs to this car, so
+  // one car braking does not light up the whole grid.
+  const discMat = new THREE.MeshStandardMaterial({
+    color: 0x3b4149, metalness: 0.9, roughness: 0.45,
+    emissive: 0xff3a10, emissiveIntensity: 0,
+  });
+  const caliperMat = new THREE.MeshStandardMaterial({
+    color: 0xb4321f, metalness: 0.4, roughness: 0.5,
+  });
   const archMat = new THREE.MeshStandardMaterial({ color: 0x07090c, roughness: 1, side: THREE.BackSide });
 
   const wheels = [];
@@ -525,7 +540,11 @@ export function buildBody(color, body, chassis = null) {
       const disc = new THREE.Mesh(
         new THREE.CylinderGeometry(radius * 0.56, radius * 0.56, width * 0.3, 14), discMat);
       disc.rotation.z = Math.PI / 2;
-      pivot.add(spin, disc);
+      // Caliper clamped over the back of the disc, where one sits.
+      const caliper = new THREE.Mesh(
+        new THREE.BoxGeometry(width * 0.34, radius * 0.5, radius * 0.22), caliperMat);
+      caliper.position.set(-side * width * 0.1, radius * 0.1, -radius * 0.42);
+      pivot.add(spin, disc, caliper);
       g.add(pivot);
 
       const arch = new THREE.Mesh(archGeo, archMat);
@@ -535,7 +554,7 @@ export function buildBody(color, body, chassis = null) {
     }
   }
 
-  return { group: g, wheels, headMat, tailMat, tyreMat };
+  return { group: g, wheels, headMat, tailMat, tyreMat, discMat };
 }
 
 export class Car {
@@ -558,6 +577,7 @@ export class Car {
     this.headMat = built.headMat;
     this.tailMat = built.tailMat;
     this.tyreMat = built.tyreMat;
+    this.discMat = built.discMat;
 
     this.position = new THREE.Vector3();
     this.velocity = new THREE.Vector3();
@@ -583,6 +603,10 @@ export class Car {
 
     this.input = { throttle: 0, brake: 0, steer: 0, handbrake: false, boost: false };
     this.aiSkill = 1;
+    // The AI's own state belongs to any car that could be driven by it, not
+    // only to the ones the grid happens to build: a car flagged `ai` with a
+    // missing phase steers by NaN.
+    this.aiPhase = 0;
 
     // Tyres are a consumable with a compound and a life. `wearing` is off in
     // the modes that are about a single lap, so a time trial is never decided
@@ -685,7 +709,9 @@ export class Car {
 
   setHeadlights(on, wetBoost = 0) {
     const lit = on ? 1 : 0;
-    if (this.beams) for (const b of this.beams) b.intensity = on ? 190 + wetBoost * 60 : 0;
+    // Headlights have to light the road at night, not decorate the front of
+    // the car.
+    if (this.beams) for (const b of this.beams) b.intensity = on ? 280 + wetBoost * 90 : 0;
     this.headMat.emissiveIntensity = on ? 3.2 : 0.6;
   }
 
@@ -826,6 +852,9 @@ export class Car {
 
     this.yawRate = r;
     this.latAccel = latAccel;
+    // Signed sideways velocity, in m/s. The camera and the effects both want to
+    // know which way the car is sliding, not only how much.
+    this.sideslip = vL;
     this.velocity.copy(fwd).multiplyScalar(vF).addScaledVector(right, vL);
     this.speed = vF;
     this.yaw += r * dt;
@@ -964,6 +993,11 @@ export class Car {
 
   get renderPosition() { return this.mesh.position; }
   get renderYaw() { return this.mesh.rotation.y; }
+  // Across the car as it is drawn, which is what a tyre mark is laid along.
+  get renderRight() {
+    const y = this.mesh.rotation.y;
+    return new THREE.Vector3(Math.cos(y), 0, -Math.sin(y));
+  }
   get renderForward() {
     const y = this.mesh.rotation.y;
     return new THREE.Vector3(Math.sin(y), 0, Math.cos(y));
@@ -993,6 +1027,12 @@ export class Car {
       if (w.steers) w.pivot.rotation.y = this.steer;
     }
     this.tailMat.emissiveIntensity = this.input.brake > 0 ? 4.5 : 1.3;
+    // Heat in the discs builds while braking hard at speed and bleeds off
+    // again. A glow that follows the pedal exactly looks like a switch.
+    const work = this.input.brake * Math.min(1, this.kmh / 140);
+    const heat = this.brakeHeat ?? 0;
+    this.brakeHeat = heat + (work - heat) * Math.min(1, dt * 1.6);
+    if (this.discMat) this.discMat.emissiveIntensity = this.brakeHeat * 2.4;
 
     const ratios = this.tune.gearRatios;
     const kmh = this.kmh;
@@ -1243,6 +1283,7 @@ export class RemoteCar {
     this.headMat = built.headMat;
     this.tailMat = built.tailMat;
     this.tyreMat = built.tyreMat;
+    this.discMat = built.discMat;
 
     this.label = makeLabel(name, color);
     this.mesh.add(this.label);
