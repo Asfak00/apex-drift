@@ -1,27 +1,24 @@
 import * as THREE from 'three';
-import { treadMaps } from './textures.js';
 import { CAR, PALETTE, CHASSIS, BOOST, PIT, ROAD_SURFACE } from './config.js';
 import { TyreSet } from './tyres.js';
-
-// A chassis only ever scales the shared baseline, so every variant stays on the
-// same handling model and no one of them needs its own physics path.
-function tuneFor(chassis) {
-  const d = chassis.drive;
-  return {
-    ...CAR,
-    mass: CAR.mass * d.mass,
-    enginePower: CAR.enginePower * d.power,
-    brakePower: CAR.brakePower * d.brake,
-    gripLat: CAR.gripLat * d.grip,
-    maxSteer: CAR.maxSteer * d.steer,
-    halfWidth: chassis.body.width / 2,
-    // A bigger wing is more downforce, so the aero cars are the ones that keep
-    // turning when everything else has run out of corner.
-    downforce: CAR.downforce * (0.55 + chassis.body.wing * 0.6) * d.grip,
-  };
-}
+import { Brakes } from './brakes.js';
+import { tuneFor, classOf, hullFor } from './vehicles.js';
+import { Materials } from './materials.js';
+import {
+  lerp, curveAt, loft, buildWheels, wrapBody, buildBike, buildKart, buildUtility,
+} from './vehicle-meshes.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
+
+// Hot steel, from the first dull red to orange. The colour is set per frame
+// only while the disc is visibly hot.
+const DISC_DULL = new THREE.Color(0x6a0800);
+const DISC_HOT = new THREE.Color(0xff6a1c);
+function discGlow(mat, glow) {
+  if (!mat) return;
+  mat.emissiveIntensity = glow > 0 ? glow ** 1.5 * 3.2 : 0;
+  if (glow > 0) mat.emissive.lerpColors(DISC_DULL, DISC_HOT, glow);
+}
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 // Lateral force from one axle at a given slip angle. Rising, peaking, then
@@ -42,21 +39,6 @@ function tyreForce(slip, maxForce, tune) {
 
 // The road ribbon is drawn a few centimetres proud of the centreline, and the
 // wheels have to stand on that, not on the centreline itself.
-
-const lerp = (a, b, t) => a + (b - a) * t;
-const smooth = (t) => t * t * (3 - 2 * t);
-
-function curveAt(points, u) {
-  if (u <= points[0][0]) return points[0][1];
-  for (let i = 1; i < points.length; i++) {
-    if (u <= points[i][0]) {
-      const [u0, v0] = points[i - 1];
-      const [u1, v1] = points[i];
-      return lerp(v0, v1, smooth((u - u0) / (u1 - u0)));
-    }
-  }
-  return points[points.length - 1][1];
-}
 
 // Each entry: belt (top of the bodywork), sill (bottom), beam (half width),
 // roof (the glasshouse, over the cabin only), and where the cabin sits.
@@ -103,6 +85,14 @@ const SHAPES = {
     beam: [[0, 0.54], [0.11, 0.92], [0.28, 1], [0.66, 1], [0.88, 0.96], [1, 0.68]],
     roof: [[0.24, 0.05], [0.34, 0.92], [0.46, 0.95], [0.54, 0.12]],
   },
+  // Four-door electric fastback: a long cabin over a flat battery floor.
+  ev: {
+    cabin: [0.24, 0.80],
+    belt: [[0, 0.24], [0.1, 0.4], [0.26, 0.48], [0.7, 0.52], [0.9, 0.48], [1, 0.38]],
+    sill: [[0, 0.14], [0.12, 0.02], [0.88, 0.02], [1, 0.16]],
+    beam: [[0, 0.6], [0.12, 0.92], [0.3, 0.99], [0.7, 1], [0.9, 0.95], [1, 0.72]],
+    roof: [[0.24, 0.05], [0.36, 0.94], [0.6, 1], [0.8, 0.2]],
+  },
   proto: {
     cabin: [0.30, 0.60],
     belt: [[0, 0.10], [0.06, 0.24], [0.26, 0.34], [0.60, 0.40], [0.86, 0.42], [1, 0.30]],
@@ -111,71 +101,6 @@ const SHAPES = {
     roof: [[0.30, 0.04], [0.40, 0.90], [0.52, 0.92], [0.60, 0.10]],
   },
 };
-
-// Superellipse: flat-ish flanks and roof with rounded shoulders, which is the
-// cross-section a car body actually has.
-function ringPoints(halfWidth, bottom, top, segments, sharpness) {
-  const cy = (bottom + top) / 2;
-  const hh = Math.max(0.02, (top - bottom) / 2);
-  const out = [];
-  for (let k = 0; k < segments; k++) {
-    const a = (k / segments) * Math.PI * 2;
-    const c = Math.cos(a), sn = Math.sin(a);
-    const e = 2 / sharpness;
-    out.push(
-      Math.sign(c) * Math.abs(c) ** e * halfWidth,
-      cy + Math.sign(sn) * Math.abs(sn) ** e * hh,
-    );
-  }
-  return out;
-}
-
-// Loft a closed tube through stations along the car and cap both ends.
-function loft(stations, segments) {
-  const position = [];
-  const uv = [];
-  const index = [];
-  stations.forEach((st, i) => {
-    const ring = ringPoints(st.halfWidth, st.bottom, st.top, segments, st.sharpness ?? 2.7);
-    for (let k = 0; k < segments; k++) {
-      position.push(ring[k * 2], ring[k * 2 + 1], st.z);
-      // u runs around the section (0 flank, 0.25 roof, 0.5 other flank,
-      // 0.75 floor); v runs nose to tail. That is enough to paint a car.
-      uv.push(k / segments, i / (stations.length - 1));
-    }
-  });
-  for (let i = 0; i < stations.length - 1; i++) {
-    for (let k = 0; k < segments; k++) {
-      const a = i * segments + k;
-      const b = i * segments + ((k + 1) % segments);
-      const c = a + segments;
-      const d = b + segments;
-      index.push(a, c, b, b, c, d);
-    }
-  }
-  // Caps: a fan to the centre of the first and last ring.
-  const capCentre = (st) => [0, (st.bottom + st.top) / 2, st.z];
-  const first = stations[0], last = stations[stations.length - 1];
-  const frontCentre = position.length / 3;
-  position.push(...capCentre(first));
-  uv.push(0.5, 0);
-  const backCentre = position.length / 3;
-  position.push(...capCentre(last));
-  uv.push(0.5, 1);
-  const lastRing = (stations.length - 1) * segments;
-  for (let k = 0; k < segments; k++) {
-    const a = k, b = (k + 1) % segments;
-    index.push(frontCentre, b, a);
-    const c = lastRing + k, d = lastRing + ((k + 1) % segments);
-    index.push(backCentre, c, d);
-  }
-
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(position, 3));
-  geo.setIndex(index);
-  geo.computeVertexNormals();
-  return geo;
-}
 
 // Height of the beltline — the top of the bodywork — above the car's ground
 // plane. BELT_RISE lifts the whole body relative to the wheels; without it a
@@ -312,30 +237,24 @@ function liveryTexture(chassis) {
 export function buildBody(color, body, chassis = null) {
   const b = body ?? CHASSIS.gt.body;
   const spec = chassis ?? CHASSIS.gt;
+  // Vehicles that are not lofted sports cars have builders of their own; all
+  // of them hand back the same parts, so the rest of the game never asks.
+  const kind = spec.class;
+  if (kind === 'moto') return buildBike(color, b, spec);
+  if (kind === 'kart') return buildKart(color, b, spec);
+  if (kind === 'suv' || kind === 'van' || kind === 'bus' || kind === 'truck') {
+    return buildUtility(color, b, spec);
+  }
   const shape = SHAPES[b.shape ?? spec.shape] ?? SHAPES.gt;
   const g = new THREE.Group();
 
-  // Automotive paint: a metallic base under a clear coat.
-  const paint = new THREE.MeshPhysicalMaterial({
-    map: paintTexture(color, spec.scheme ?? 'stripes'),
-    metalness: 0.7, roughness: 0.26,
-    clearcoat: 1, clearcoatRoughness: 0.05, envMapIntensity: 1.35,
-  });
-  // Wings and spoilers are bare carbon, not painted panels.
-  const carbonMat = new THREE.MeshPhysicalMaterial({
-    color: 0x16191f, metalness: 0.5, roughness: 0.34,
-    clearcoat: 0.8, clearcoatRoughness: 0.2, envMapIntensity: 1.1,
-  });
-  const glass = new THREE.MeshPhysicalMaterial({
-    color: 0x0e1a26, metalness: 0.2, roughness: 0.03,
-    transparent: true, opacity: 0.72, envMapIntensity: 1.7,
-  });
-  const trim = new THREE.MeshStandardMaterial({
-    color: 0x12161d, roughness: 0.58, metalness: 0.4,
-  });
-  const chrome = new THREE.MeshStandardMaterial({
-    color: 0xadb7c4, metalness: 1, roughness: 0.13, envMapIntensity: 1.7,
-  });
+  // Automotive paint: a metallic base with flakes under a clear coat; wings
+  // and spoilers are bare carbon; glass is glass.
+  const paint = Materials.carPaint({ map: paintTexture(color, spec.scheme ?? 'stripes') });
+  const carbonMat = Materials.carbon();
+  const glass = Materials.glass();
+  const trim = Materials.trim();
+  const chrome = Materials.chrome();
 
   const shell = new THREE.Mesh(shellGeometry(b, shape), paint);
   shell.castShadow = true;
@@ -480,92 +399,57 @@ export function buildBody(color, body, chassis = null) {
   // Wheels tuck just inside the haunches, with a dark liner behind each.
   const radius = 0.29 + b.ride * 0.11;
   const width = b.width * 0.18;
-  const tyreGeo = new THREE.CylinderGeometry(radius, radius, width, 22);
-  tyreGeo.rotateZ(Math.PI / 2);
-  const rimGeo = new THREE.CylinderGeometry(radius * 0.66, radius * 0.66, width * 1.04, 16);
-  rimGeo.rotateZ(Math.PI / 2);
-  const spokeGeo = new THREE.BoxGeometry(width * 1.06, radius * 1.16, 0.045);
-  const archGeo = new THREE.CylinderGeometry(radius * 1.16, radius * 1.16, width * 1.02, 18, 1, true);
-  archGeo.rotateZ(Math.PI / 2);
-
-  // A coloured sidewall band: which compound is on the car should be readable
-  // from the chase camera, not only from the HUD.
-  const wallGeo = new THREE.CylinderGeometry(radius * 0.88, radius * 0.88, width * 1.06, 20, 1, true);
-  wallGeo.rotateZ(Math.PI / 2);
-  const tyreMat = new THREE.MeshStandardMaterial({
-    color: 0xffc94d, emissive: 0xffc94d, emissiveIntensity: 0.55,
-    roughness: 0.7, side: THREE.DoubleSide,
+  const tuck = (u) => hw * curveAt(shape.beam, u) - width * 0.62;
+  const { wheels, tyreMat, discMat, rearDiscMat } = buildWheels(g, {
+    axles: [
+      { z: zAt(0.20), x: tuck(0.20), steers: true },
+      { z: zAt(0.78), x: tuck(0.78) },
+    ],
+    radius, width,
   });
+  const bodyGroup = wrapBody(g, wheels);
+  return { group: g, wheels, headMat, tailMat, tyreMat, discMat, rearDiscMat, body: bodyGroup };
+}
 
-  // Rubber with tread: the pattern is cut into the carcass rather than
-  // painted on, so a turning wheel reads as a tyre and not as a cylinder.
-  const tread = treadMaps();
-  const rubber = new THREE.MeshStandardMaterial({
-    color: 0x24272d, roughness: 0.93, metalness: 0,
-    map: tread.map, normalMap: tread.normalMap,
-    normalScale: new THREE.Vector2(0.9, 0.9),
-  });
-  const rimMat = new THREE.MeshStandardMaterial({
-    color: 0xc2ccd8, metalness: 1, roughness: 0.18, envMapIntensity: 1.6,
-  });
-  // Discs glow when they are being used. The material belongs to this car, so
-  // one car braking does not light up the whole grid.
-  const discMat = new THREE.MeshStandardMaterial({
-    color: 0x3b4149, metalness: 0.9, roughness: 0.45,
-    emissive: 0xff3a10, emissiveIntensity: 0,
-  });
-  const caliperMat = new THREE.MeshStandardMaterial({
-    color: 0xb4321f, metalness: 0.4, roughness: 0.5,
-  });
-  const archMat = new THREE.MeshStandardMaterial({ color: 0x07090c, roughness: 1, side: THREE.BackSide });
-
-  const wheels = [];
-  const frontU = 0.20, rearU = 0.78;
-  for (const [u, steers] of [[frontU, true], [rearU, false]]) {
-    const z = zAt(u);
-    // Tuck the wheel under the haunch so the bodywork covers its top edge.
-    const x = hw * curveAt(shape.beam, u) - width * 0.62;
-    for (const side of [-1, 1]) {
-      const pivot = new THREE.Group();
-      pivot.position.set(side * x, radius, z);
-      const spin = new THREE.Group();
-      const tyre = new THREE.Mesh(tyreGeo, rubber);
-      tyre.castShadow = true;
-      spin.add(tyre, new THREE.Mesh(rimGeo, rimMat), new THREE.Mesh(wallGeo, tyreMat));
-      for (let k = 0; k < 5; k++) {
-        const spoke = new THREE.Mesh(spokeGeo, rimMat);
-        spoke.rotation.x = (k / 5) * Math.PI;
-        spin.add(spoke);
-      }
-      const disc = new THREE.Mesh(
-        new THREE.CylinderGeometry(radius * 0.56, radius * 0.56, width * 0.3, 14), discMat);
-      disc.rotation.z = Math.PI / 2;
-      // Caliper clamped over the back of the disc, where one sits.
-      const caliper = new THREE.Mesh(
-        new THREE.BoxGeometry(width * 0.34, radius * 0.5, radius * 0.22), caliperMat);
-      caliper.position.set(-side * width * 0.1, radius * 0.1, -radius * 0.42);
-      pivot.add(spin, disc, caliper);
-      g.add(pivot);
-
-      const arch = new THREE.Mesh(archGeo, archMat);
-      arch.position.set(side * (x - width * 0.08), radius + 0.05, z);
-      g.add(arch);
-      wheels.push({ pivot, spin, steers, radius });
-    }
-  }
-
-  return { group: g, wheels, headMat, tailMat, tyreMat, discMat };
+// Tyre capacity under load. Grip rises with load but by less and less, so an
+// axle whose load has moved to one side grips less in total than the same axle
+// loaded evenly. That is what roll stiffness trades: whichever axle takes more
+// of the car's lateral load transfer loses more grip.
+const LOAD_SENSITIVITY = 0.12;
+function tyreCapacity(load, nominal) {
+  return load * (1 - LOAD_SENSITIVITY * (load / nominal - 1));
+}
+function axlePair(load, shift, nominal) {
+  const d = Math.min(Math.abs(shift), load * 0.49);
+  return tyreCapacity(load / 2 + d, nominal) + tyreCapacity(load / 2 - d, nominal);
+}
+// Share of an axle's grip a differential can put down as drive: an open diff
+// is held to twice what the unloaded inside wheel can take, a locked one uses
+// both wheels fully.
+function diffShare(load, shift, nominal, lock) {
+  const pair = axlePair(load, shift, nominal);
+  if (pair <= 1e-6) return 1;
+  const d = Math.min(Math.abs(shift), load * 0.49);
+  const open = 2 * tyreCapacity(load / 2 - d, nominal);
+  return (open + (pair - open) * lock) / pair;
 }
 
 export class Car {
   constructor(track, {
-    color = null, ai = false, name = 'YOU', headlights = false, chassis = CHASSIS.gt,
+    color = null, ai = false, name = 'YOU', headlights = false, chassis = CHASSIS.gt, setup = null,
   } = {}) {
     this.track = track;
     this.ai = ai;
     this.name = name;
     this.chassis = chassis;
-    this.tune = tuneFor(chassis);
+    this.profile = classOf(chassis);
+    this.tune = tuneFor(chassis, setup);
+    // Lateral load moved across each axle, as set up and as it came: [front,
+    // rear, stock front, stock rear], in newtons.
+    this.transfer = [0, 0, 0, 0];
+    this.lean = 0;           // rad, two-wheelers only; positive leans left
+    this.wheelie = 0;
+    this.stoppie = 0;
     // Where this tyre curve peaks, in radians of slip. Derived from the curve
     // itself so the steering limit tracks any change to the tyre model.
     this.peakSlip = Math.tan(Math.PI / (2 * this.tune.tyreC)) / this.tune.tyreB;
@@ -578,6 +462,13 @@ export class Car {
     this.tailMat = built.tailMat;
     this.tyreMat = built.tyreMat;
     this.discMat = built.discMat;
+    this.rearDiscMat = built.rearDiscMat;
+    this.body = built.body;
+    this.rider = built.rider ?? null;
+    // Disc temperatures, and the fade that comes with too much of it.
+    this.brakes = new Brakes(this.tune.brakeBias);
+    // Share of each axle's load on the driver's left tyres; 0.5 is straight.
+    this.leftShare = 0.5;
 
     this.position = new THREE.Vector3();
     this.velocity = new THREE.Vector3();
@@ -612,6 +503,7 @@ export class Car {
     // the modes that are about a single lap, so a time trial is never decided
     // by rubber the driver cannot change.
     this.tyres = new TyreSet('medium');
+    this.tyres.coldPsi = [...this.tune.pressure];
     this.wearing = false;
     // A pit stop is a state the car is in, not an event: requested, in the
     // lane, being worked on, then back out.
@@ -632,19 +524,37 @@ export class Car {
       // AI cars carry their own charges; the player's are bought with points.
       armed: ai,
     };
-    // Collision body: one circle big enough to cover the shell.
-    this.radius = Math.max(chassis.body.width, chassis.body.length * 0.55) * 0.5;
+    // Collision body: a row of circles along the body; `radius` is the circle
+    // that holds all of them, for the cheap test before the real one.
+    this.hull = hullFor(chassis.body, built.centerZ ?? 0);
+    this.radius = Math.max(...this.hull.map((h) => Math.abs(h.offset) + h.radius));
     this.slide = 0;   // how far past the grip limit the tyres are, for smoke
 
-    if (headlights) {
-      this.beams = [-0.6, 0.6].map((sx) => {
+    if (headlights && !this.profile.caps.dark) {
+      // Lamps where the vehicle's lamps are: one on a bike, two on anything
+      // else, at its own nose and height.
+      const bd = chassis.body;
+      const sides = this.profile.wheels === 2 ? [0] : [-1, 1];
+      const nose = bd.length / 2 + (built.centerZ ?? 0);
+      const lampY = Math.max(0.5, bd.ride + 0.1);
+      this.beams = sides.map((side) => {
+        const sx = side * Math.min(0.6, bd.width * 0.3);
         const s = new THREE.SpotLight(0xfff0d8, 0, 95, Math.PI / 7, 0.45, 1.1);
-        s.position.set(sx, 0.6, 2.4);
-        s.target.position.set(sx * 1.6, -0.6, 26);
+        s.position.set(sx, lampY, nose);
+        s.target.position.set(sx * 1.6, -0.6, nose + 24);
         this.mesh.add(s, s.target);
         return s;
       });
     }
+  }
+
+  // A new setup is a new tune. State carries over: a car can be re-tuned in
+  // the garage, or between sessions, without being rebuilt.
+  setSetup(setup) {
+    this.tune = tuneFor(this.chassis, setup);
+    this.brakes.bias = this.tune.brakeBias;
+    this.tyres.coldPsi = [...this.tune.pressure];
+    if (this.body) this.body.position.y = (this.tune.setup.rideHeight ?? 0) / 1000;
   }
 
   // Fitting a set is the one place the compound changes, so the sidewall and
@@ -720,10 +630,19 @@ export class Car {
   // tyres decide what the car does about it. Yaw is something the car has, not
   // something the steering wheel writes directly, which is why it settles
   // instead of snapping.
-  update(dt, roadGrip, wet = 0) {
+  // `air` and `road` are temperatures in C and `standing` the sheet water on
+  // the road, from the track condition; they drive tyre and brake heat.
+  update(dt, roadGrip, wet = 0, { air = 20, road = 25, standing = 0 } = {}) {
     const i = this.input;
     const tune = this.tune;
-    const grip = this.surfaceGrip(roadGrip, wet);
+    // Tread temperature changes grip axle by axle. The car-wide figure every
+    // estimate reads (the steering limit, the AI's corner speed) takes the
+    // mean; the axles then carry their own difference from it, so hot rears
+    // make a car loose and cold fronts make it push.
+    const tyreFront = this.tyres.axleGrip(0, this.leftShare) * this.tyres.pressureGrip(0);
+    const tyreRear = this.tyres.axleGrip(1, this.leftShare) * this.tyres.pressureGrip(1);
+    const tyreMean = (tyreFront + tyreRear) / 2;
+    const grip = this.surfaceGrip(roadGrip, wet) * tyreMean;
     this.gripMul = grip;
     this.prevPosition.copy(this.position);
     this.prevYaw = this.yaw;
@@ -756,6 +675,30 @@ export class Car {
     const rate = (i.steer === 0 ? tune.steerReturn : tune.steerRate) * dt;
     this.steer += clamp(target - this.steer, -rate, rate);
 
+    // A two-wheeler corners by leaning, and the rider decides the lean. The
+    // bike can only turn as hard as its lean balances (a = g tan lean), so a
+    // steering input first rolls the bike over and the turn follows it. Near
+    // a standstill a foot is down and the lean no longer matters.
+    if (tune.lean) {
+      const wantAccel = asked * gripLimit;
+      const wantLean = clamp(Math.atan(wantAccel / 9.81), -tune.maxLean, tune.maxLean)
+        * clamp(speed / 6, 0, 1);
+      const before = this.lean;
+      this.lean += clamp(wantLean - this.lean, -tune.leanRate * dt, tune.leanRate * dt);
+      this.leanRate = (this.lean - before) / dt;
+      // The rider leans the bike; the front wheel follows the lean. The bars
+      // settle at the angle the lean's curvature needs (L / R, with
+      // 1 / R = g tan(lean) / v^2) plus the slip the front tyre runs to make
+      // that force. Below walking pace a foot is down and the bars are steered.
+      const v2 = Math.max(speed, 3) ** 2;
+      const need = 9.81 * Math.tan(this.lean);
+      const share = Math.min(1, Math.abs(need) / Math.max(1, gripLimit));
+      const leanSteer = Math.atan(tune.wheelBase * need / v2)
+        + Math.sign(this.lean) * share * this.peakSlip * 0.5;
+      const ride = clamp((speed - 3) / 5, 0, 1);
+      this.steer = clamp(ride * leanSteer + (1 - ride) * this.steer, -tune.maxSteer, tune.maxSteer);
+    }
+
     const fwd = this.forward, right = this.right;
     let vF = this.velocity.dot(fwd);
     let vL = this.velocity.dot(right);
@@ -774,35 +717,92 @@ export class Car {
     const mu = (tune.gripLat / 9.81) * grip * (this.onRoad ? 1 : tune.offTrackGrip);
     const aeroLoad = (tune.downforce * speed * speed) * tune.mass * (9.81 / tune.gripLat);
     const weight = tune.mass * 9.81;
+    // A bike can move its whole weight onto one wheel; a car's suspension
+    // geometry never lets it get near that.
+    const reach = tune.lean ? 0.95 : 0.3;
     const transfer = clamp(tune.mass * this.lastAx * tune.cogHeight / L,
-      -weight * 0.3, weight * 0.3);
+      -weight * reach, weight * reach);
     const loadFront = Math.max(0, weight * (b / L) - transfer + aeroLoad * tune.aeroBalance);
     const loadRear = Math.max(0, weight * (a / L) + transfer + aeroLoad * (1 - tune.aeroBalance));
-    const rearCap = mu * loadRear * tune.rearGripBias;
-    const frontCap = mu * loadFront;
+
+    // Lateral load transfer, split front to rear by roll stiffness and moved
+    // across as fast as the springs and dampers let it. Grip is measured
+    // against the vehicle as it came, so the stock setup drives exactly as it
+    // always did and a change of setup moves the balance from there.
+    const nomF = weight * (b / L) / 2, nomR = weight * (a / L) / 2;
+    const shifts = this.transfer;
+    let sensF = 1, sensR = 1;
+    if (!tune.lean) {
+      const ay = Math.abs(this.latAccel ?? 0);
+      const shift = tune.mass * ay * tune.cogHeight / tune.trackWidth;
+      const stock = tune.mass * ay * tune.cogHeight0 / tune.trackWidth;
+      const k = 1 - Math.exp(-dt / tune.rollTau), k0 = 1 - Math.exp(-dt / tune.rollTau0);
+      shifts[0] += (shift * tune.rollFront - shifts[0]) * k;
+      shifts[1] += (shift * (1 - tune.rollFront) - shifts[1]) * k;
+      shifts[2] += (stock * tune.rollFront0 - shifts[2]) * k0;
+      shifts[3] += (stock * (1 - tune.rollFront0) - shifts[3]) * k0;
+      const ref = (load, s, n) => Math.max(1e-6, axlePair(load, s, n));
+      sensF = axlePair(loadFront, shifts[0], nomF) / ref(loadFront, shifts[2], nomF);
+      sensR = axlePair(loadRear, shifts[1], nomR) / ref(loadRear, shifts[3], nomR);
+    }
+    const rearCap = mu * loadRear * tune.rearGripBias * (tyreRear / tyreMean) * sensR;
+    const frontCap = mu * loadFront * (tyreFront / tyreMean) * sensF;
 
     // --- longitudinal -----------------------------------------------------
-    // Constant force below the power band, constant power above it.
+    // Constant force below the power band, constant power above it. A
+    // shorter final drive multiplies the force at the wheels (power is power)
+    // and reaches the rev limit sooner; a governor or an electric motor's
+    // top speed is a limit of its own.
+    const fd = tune.finalDrive;
     const driveForce = tune.enginePower
-      * Math.min(1, tune.powerBand / Math.max(Math.abs(vF), tune.powerBand));
-    const demand = i.throttle > 0 ? i.throttle * driveForce * (vF < 0 ? 1.6 : 1) : 0;
+      * Math.min(fd, tune.powerBand / Math.max(Math.abs(vF), 1e-3));
+    const governor = clamp((tune.topLimit / fd - Math.abs(vF)) / 2, 0, 1);
+    const demand = i.throttle > 0 ? i.throttle * driveForce * governor * (vF < 0 ? 1.6 : 1) : 0;
     const boostDemand = this.#updateBoost(dt, i, vF);
     // The road can only push back as hard as the rear tyres can grip it.
     // Without this the car took full acceleration AND lost all its cornering
     // grip to a force the tyres were never making — which is exactly why a wet
     // circuit used to turn every corner into a slide.
     const pull = demand + boostDemand;
-    const traction = Math.max(0, rearCap * 0.97);
-    const drive = Math.min(pull, traction);
+    // The drive is split between the axles by the drivetrain, and each axle
+    // puts down what its tyres and its differential allow.
+    const split = tune.driveFront;
+    const lockF = tune.caps.diff ? diffShare(loadFront, shifts[0], nomF, tune.diffAccel)
+      / diffShare(loadFront, shifts[0], nomF, tune.diffAccel0) : 1;
+    const lockR = tune.caps.diff ? diffShare(loadRear, shifts[1], nomR, tune.diffAccel)
+      / diffShare(loadRear, shifts[1], nomR, tune.diffAccel0) : 1;
+    const driveF = Math.min(pull * split, Math.max(0, frontCap * 0.97 * lockF));
+    let driveR = Math.min(pull * (1 - split), Math.max(0, rearCap * 0.97 * lockR));
+    // Past this much drive the front wheel of a bike leaves the ground.
+    this.wheelie = 0;
+    if (tune.lean) {
+      const lift = weight * (b / tune.cogHeight) * 0.97;
+      this.wheelie = clamp((driveR - lift) / lift, 0, 1);
+      driveR = Math.min(driveR, lift);
+    }
+    const drive = driveF + driveR;
     this.wheelspin = pull > 1 ? Math.min(1, (pull - drive) / Math.max(1, pull)) : 0;
 
-    // Brakes are limited the same way, by all four tyres together.
-    const brakeAsked = i.brake > 0 && vF > 0.5 ? i.brake * tune.brakePower : 0;
-    const brakeGrip = (frontCap + rearCap) * 0.98;
+    // Brakes are limited the same way, by all four tyres together, and by
+    // what the discs can still do at their temperature. A bike's rear wheel
+    // lifts before its front tyre gives up.
+    const brakeAsked = i.brake > 0 && vF > 0.5
+      ? i.brake * tune.brakePower * this.brakes.efficiency : 0;
+    let brakeGrip = (frontCap + rearCap) * 0.98;
+    this.stoppie = 0;
+    if (tune.lean) {
+      const lift = weight * (a / tune.cogHeight) * 0.97;
+      this.stoppie = clamp((brakeAsked - lift) / lift, 0, 1);
+      brakeGrip = Math.min(brakeGrip, lift);
+    }
     const brakeForce = Math.min(brakeAsked, brakeGrip);
     this.lockup = brakeAsked > 1 ? Math.min(1, (brakeAsked - brakeForce) / brakeAsked) : 0;
 
     let force = drive - brakeForce;
+    // An electric motor off the throttle is a generator: it slows the car and
+    // puts charge back.
+    const regen = tune.regen > 0 && i.throttle < 0.05 && vF > 1 ? tune.regen * tune.mass : 0;
+    force -= regen;
     if (i.brake > 0 && vF <= 0.5) force -= i.brake * tune.enginePower * tune.reverseFactor;
     const surfaceDrag = this.onRoad ? 0 : tune.offTrackDrag;
     force -= Math.sign(vF) * (tune.rollResist + surfaceDrag) * tune.mass * 0.01;
@@ -816,6 +816,7 @@ export class Car {
     const dir = vF >= 0 ? 1 : -1;
     const slipFront = Math.atan((vL + a * r) / u) - this.steer * dir;
     const slipRear = Math.atan((vL - b * r) / u);
+    this.slipAngles = [slipFront, slipRear];
 
     // A tyre has one grip budget. Whatever an axle is already spending on
     // driving or braking is not available for cornering, so hard power takes
@@ -823,19 +824,38 @@ export class Car {
     // to carry a corner it no longer has the load for.
     const budget = (capacity, longitudinal) =>
       Math.sqrt(Math.max(0, capacity * capacity - longitudinal * longitudinal));
-    const frontCapacity = budget(frontCap, brakeForce * 0.62);
-    const rearCapacity = budget(rearCap, drive + brakeForce * 0.38);
+    // Brake bias decides which axle's grip the braking spends: too far
+    // forward and the car will not turn on the brakes, too far back and the
+    // rear steps out.
+    const bias = tune.brakeBias;
+    const frontCapacity = budget(frontCap, brakeForce * bias + driveF);
+    const rearCapacity = budget(rearCap, driveR + brakeForce * (1 - bias));
 
     let forceFront = tyreForce(slipFront, frontCapacity, tune);
     let forceRear = tyreForce(slipRear, rearCapacity, tune);
     if (i.handbrake) forceRear *= tune.handbrakeGrip;
+    // Leaning is the limit: a tyre can only push sideways as hard as the lean
+    // balances, plus what a foot on the ground allows at walking pace.
+    if (tune.lean) {
+      const balance = Math.tan(Math.abs(this.lean)) * 1.08 + clamp(1 - speed / 7, 0, 1) * 1.2;
+      forceFront = clamp(forceFront, -loadFront * balance, loadFront * balance);
+      forceRear = clamp(forceRear, -loadRear * balance, loadRear * balance);
+    }
 
     const inertia = tune.mass * L * L * tune.inertiaFactor;
     const cos = Math.cos(this.steer);
     const latAccel = (forceFront * cos + forceRear) / tune.mass;
     // Damping opposes the rotation itself, which is what stops the yaw
-    // overshooting and swinging back against the steering.
-    const damping = tune.yawDamp * (1 + speed * 0.02) * r;
+    // overshooting and swinging back against the steering. A differential
+    // adds to it: the more it locks the rear wheels together, the more it
+    // resists the car rotating, on power and on the coast alike.
+    const baseDamp = tune.yawDamp * (1 + speed * 0.02);
+    let diffDamp = 0;
+    if (tune.caps.diff) {
+      diffDamp = i.throttle > 0.1
+        ? (tune.diffAccel - tune.diffAccel0) : (tune.diffDecel - tune.diffDecel0);
+    }
+    const damping = baseDamp * Math.max(0.35, 1 + diffDamp * 0.4) * r;
     const yawAccel = (a * forceFront * cos - b * forceRear) / inertia - damping;
 
     // Below walking pace the slip model has nothing to work with, so it hands
@@ -849,9 +869,23 @@ export class Car {
     // twice and cancels about half of the cornering force.
     vL = blend * (vL + latAccel * dt) + (1 - blend) * vL * 0.82;
     r = blend * (r + yawAccel * dt) + (1 - blend) * geometricYaw;
+    let lateral = latAccel;
+    // A rolling bike's heading is tied to its lean: it turns at exactly the
+    // rate its lean balances (r = g tan(lean) / v) and barely slips sideways.
+    // Only when the lean asks for more than the tyres have does it slide, and
+    // then the tyre model above is what happens.
+    if (tune.lean && speed > 4) {
+      const want = 9.81 * Math.tan(this.lean);
+      if (Math.abs(want) <= gripLimit) {
+        // The lean is already rate-limited, so its yaw rate is smooth as it is.
+        r = (want / Math.max(speed, 4)) * dir;
+        vL *= Math.exp(-dt / 0.1);
+        lateral = want;
+      }
+    }
 
     this.yawRate = r;
-    this.latAccel = latAccel;
+    this.latAccel = lateral;
     // Signed sideways velocity, in m/s. The camera and the effects both want to
     // know which way the car is sliding, not only how much.
     this.sideslip = vL;
@@ -861,6 +895,35 @@ export class Car {
 
     // How fast the rear tyre is scrubbing sideways: the smoke and the hiss.
     this.slide = Math.abs(Math.sin(slipRear)) * speed;
+
+    // --- heat -------------------------------------------------------------
+    // The tread heats by the work it does sliding: lateral force times the
+    // speed it scrubs sideways at its slip angle, plus the longitudinal slip
+    // of driving, braking, wheelspin and lock-ups.
+    const scrubF = Math.abs(forceFront) * u * Math.abs(Math.sin(slipFront));
+    const scrubR = Math.abs(forceRear) * u * Math.abs(Math.sin(slipRear));
+    const braking = (share) => brakeForce * share * (0.06 * speed + this.lockup * speed * 0.5);
+    const driving = (share) => share * (0.04 * speed + this.wheelspin * 12);
+    // A left turn loads the right-hand tyres; `right` in this model points to
+    // the driver's left, so positive lateral acceleration is a left turn. A
+    // bike's tyres are in line: nothing moves across.
+    this.leftShare = tune.lean ? 0.5 : clamp(0.5 - latAccel * 0.015, 0.15, 0.85);
+    this.tyres.heat(dt, {
+      power: [scrubF + braking(bias) + driving(driveF), scrubR + braking(1 - bias) + driving(driveR)],
+      load: [loadFront, loadRear],
+      left: this.leftShare,
+      speed, air, road, wet, standing,
+    });
+    // A locked wheel is not turning its disc: that work went into the tyre.
+    // An electric car's motor does part of the braking and keeps it.
+    this.brakes.heat(dt, {
+      force: brakeForce * (1 - this.lockup) * (tune.electric ? 0.6 : 1), speed: vF, air,
+    });
+    if (tune.battery > 0) {
+      // Charge in kWh: drawn by the drive, returned by the motor braking.
+      const kw = (drive * Math.max(0, vF) / 0.9 - (regen + brakeForce * 0.4) * Math.max(0, vF) * 0.7) / 1000;
+      this.charge = Math.min(tune.battery, Math.max(0, (this.charge ?? tune.battery) - kw * dt / 3600));
+    }
 
     this.position.addScaledVector(this.velocity, dt);
 
@@ -1014,31 +1077,51 @@ export class Car {
   }
 
   #syncMesh(dt, vF, vL) {
-    // Body roll and pitch read the forces without needing a physics engine.
-    const roll = clamp((this.latAccel ?? 0) * 0.011, -0.13, 0.13);
-    const pitch = clamp(-this.input.throttle * 0.02 + this.input.brake * 0.035, -0.06, 0.06);
-    // Ease toward the target so a sudden input never snaps the body.
+    const tune = this.tune;
     const k = Math.min(1, dt * 9);
-    this.mesh.rotation.z += (roll - this.mesh.rotation.z) * k;
-    this.mesh.rotation.x += (pitch - this.mesh.rotation.x) * k;
+    if (tune.lean) {
+      // The whole machine leans on its tyres' contact line, and the rider
+      // hangs off a little further into the corner. A wheelie or a stoppie
+      // pitches it about the wheel still on the ground.
+      this.mesh.rotation.z = -this.lean;
+      const pitch = -this.wheelie * 0.38 + this.stoppie * 0.22;
+      this.mesh.rotation.x += (pitch - this.mesh.rotation.x) * Math.min(1, dt * 5);
+      if (this.rider) {
+        this.rider.rotation.z = -this.lean * 0.2;
+        this.rider.position.x = this.lean * 0.14;
+      }
+    } else if (tune.caps.tilt) {
+      // Body roll and pitch read the forces without needing a physics engine;
+      // softer springs roll further. The body moves on the wheels, not with
+      // them.
+      const soft = tune.rollScale;
+      const roll = clamp((this.latAccel ?? 0) * 0.011 * soft, -0.16, 0.16);
+      const pitch = clamp((-this.input.throttle * 0.02 + this.input.brake * 0.035) * soft, -0.08, 0.08);
+      const target = this.body ?? this.mesh;
+      const kk = Math.min(1, dt * 9 / Math.max(0.6, tune.rollTau / 0.11));
+      target.rotation.z += (roll - target.rotation.z) * kk;
+      target.rotation.x += (pitch - target.rotation.x) * kk;
+    }
 
     for (const w of this.wheels) {
       w.spin.rotation.x += (vF / w.radius) * dt;
-      if (w.steers) w.pivot.rotation.y = this.steer;
+      // A bike's bars turn against the lean for an instant before they turn
+      // with it: counter-steer.
+      if (w.steers) w.pivot.rotation.y = this.steer - (tune.lean ? (this.leanRate ?? 0) * 0.04 : 0);
     }
     this.tailMat.emissiveIntensity = this.input.brake > 0 ? 4.5 : 1.3;
-    // Heat in the discs builds while braking hard at speed and bleeds off
-    // again. A glow that follows the pedal exactly looks like a switch.
-    const work = this.input.brake * Math.min(1, this.kmh / 140);
-    const heat = this.brakeHeat ?? 0;
-    this.brakeHeat = heat + (work - heat) * Math.min(1, dt * 1.6);
-    if (this.discMat) this.discMat.emissiveIntensity = this.brakeHeat * 2.4;
+    // Discs glow by their temperature: nothing until about 420 C, then dull
+    // red warming toward orange. The glow lags the pedal because the heat does.
+    discGlow(this.discMat, this.brakes.glow(0));
+    discGlow(this.rearDiscMat, this.brakes.glow(1));
 
     const ratios = this.tune.gearRatios;
     const kmh = this.kmh;
     let g = 1;
     while (g < ratios.length - 1 && kmh > ratios[g]) g++;
-    this.gear = this.speed < -0.6 ? 'R' : kmh < 1 ? 'N' : g;
+    // A single-speed drive has no gear to show, only a direction.
+    const moving = this.speed < -0.6 ? 'R' : kmh < 1 ? 'N' : null;
+    this.gear = moving ?? (tune.caps.gears ? g : 'D');
   }
 
   // Checkpoints must be taken in order, so cutting the circuit cannot score a lap.
@@ -1141,8 +1224,11 @@ export class Car {
     }
 
     // Aim a fixed time ahead, then pull the aim point toward the inside of
-    // the corner the car is already in.
-    const aimArc = 11 + speed * 0.5;
+    // the corner the car is already in. A bike has to roll into its lean
+    // before it turns, so it looks further ahead and takes corners with more
+    // in hand.
+    const lean = this.tune.lean;
+    const aimArc = lean ? 16 + speed * 0.62 : 11 + speed * 0.5;
     const aim = track.frameAt(p.t + aimArc / len);
     const here = this.#bend(p.t, 55);
     const inside = clamp(here.signed * 90, -this.track.roadHalf * 0.55, this.track.roadHalf * 0.55);
@@ -1156,15 +1242,28 @@ export class Car {
     );
     // Proportional on heading error, damped on yaw rate: the same thing a
     // driver does with their hands.
-    this.input.steer = clamp(err * 1.9 - this.yawRate * 0.28, -1, 1);
+    if (lean) {
+      // Pure pursuit: the arc through the aim point needs a lateral
+      // acceleration, and on a bike asking for a lateral acceleration is
+      // asking for a lean. Steering the lean directly keeps the rider ahead
+      // of the roll instead of chasing the heading it lags behind.
+      const reach = Math.max(6, toGoal.length());
+      const need = speed * speed * (2 * Math.sin(err) / reach);
+      const limit = (this.tune.gripLat + this.tune.downforce * speed * speed) * this.gripMul;
+      const share = clamp(need / Math.max(1, limit), -1, 1);
+      this.input.steer = Math.sign(share) * Math.abs(share) ** (1 / this.tune.steerCurve);
+    } else {
+      this.input.steer = clamp(err * 1.9 - this.yawRate * 0.28, -1, 1);
+    }
 
     // Brake for whatever corner sits one braking distance away, never for the
     // one already under the wheels.
     const brakeArc = Math.max(22, speed * speed / 17);
+    const margin = lean ? 0.86 : 1;
     const target = Math.min(
       74 * this.aiSkill,
-      this.#cornerSpeed(p.t + brakeArc / len, 55) * this.aiSkill,
-      this.#cornerSpeed(p.t, 40) * this.aiSkill * 1.15,
+      this.#cornerSpeed(p.t + brakeArc / len, 55) * this.aiSkill * margin,
+      this.#cornerSpeed(p.t, 40) * this.aiSkill * 1.15 * margin,
     );
 
     if (speed > target + 1.5) {
@@ -1221,13 +1320,23 @@ export class Car {
 
 const AI_CHASSIS = ['mid', 'muscle', 'rear', 'rally', 'proto'];
 
-export function makeRivals(track, count) {
+// Rivals come from the player's group: a car race against cars, a bike race
+// against bikes, a bus against the heavy vehicles. Class-restricted racing
+// is the default because a bus is not meant to keep up with a hypercar.
+export function rivalPool(playerKey) {
+  const group = classOf(CHASSIS[playerKey]).group;
+  if (group === 'car') return AI_CHASSIS;
+  return Object.keys(CHASSIS).filter((k) => classOf(CHASSIS[k]).group === group);
+}
+
+export function makeRivals(track, count, playerKey = 'gt') {
+  const pool = rivalPool(playerKey);
   return Array.from({ length: count }, (_, i) => {
     const car = new Car(track, {
       color: PALETTE.rivals[i % PALETTE.rivals.length],
       ai: true,
       name: `CPU ${i + 1}`,
-      chassis: CHASSIS[AI_CHASSIS[i % AI_CHASSIS.length]],
+      chassis: CHASSIS[pool[i % pool.length]],
     });
     car.aiSkill = 0.93 + i * 0.035;
     car.aiPhase = i * 2.1;
@@ -1298,7 +1407,11 @@ export class RemoteCar {
     this.steer = 0;
     this.lap = 0;
     this.seen = false;
-    this.radius = Math.max(spec.body.width, spec.body.length * 0.55) * 0.5;
+    this.chassis = spec;
+    this.lean = !!classOf(spec).caps.lean;
+    this.hull = hullFor(spec.body, built.centerZ ?? 0);
+    this.radius = Math.max(...this.hull.map((h) => Math.abs(h.offset) + h.radius));
+    this.label.position.set(0, spec.body.roof + spec.body.ride + 2.2, 0);
   }
 
   get kmh() { return Math.abs(this.speed) * 3.6; }
@@ -1329,11 +1442,16 @@ export class RemoteCar {
       Math.sin(this.targetYaw - this.yaw), Math.cos(this.targetYaw - this.yaw),
     );
     this.yaw += delta * k;
+    // A remote bike leans by how hard it is turning: a = v * yaw rate.
+    if (this.lean && dt > 0) {
+      const rate = (delta * k) / dt;
+      const want = Math.atan(Math.max(-1.7, Math.min(1.7, this.speed * rate / 9.81)));
+      this.mesh.rotation.z += (-want - this.mesh.rotation.z) * Math.min(1, dt * 8);
+    }
 
     this.velocity.set(Math.sin(this.yaw) * this.speed, 0, Math.cos(this.yaw) * this.speed);
     this.mesh.position.copy(this.position);
     this.mesh.rotation.y = this.yaw;
-    this.label.position.set(0, 3.1, 0);
 
     for (const w of this.wheels) {
       w.spin.rotation.x += (this.speed / w.radius) * dt;

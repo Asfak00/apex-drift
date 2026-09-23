@@ -16,6 +16,9 @@ import { Wallet } from './wallet.js';
 import { PitCrew } from './pit-crew.js';
 import { Showroom } from './showroom.js';
 import { DebugView } from './debug.js';
+import { RenderPipeline, gradeFor } from './render.js';
+import { TrackCondition } from './track-condition.js';
+import { clampSetup } from './vehicles.js';
 
 const VISION_KEYS = Object.keys(VISIONS);
 const WEATHER_KEYS = Object.keys(WEATHERS);
@@ -26,11 +29,10 @@ export class Game {
     this.onFinish = onFinish ?? (() => {});
     this.onExit = onExit ?? (() => {});
 
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
-    // Phones pay for every pixel twice over; cap the buffer before it costs
-    // frames that the physics step would rather have.
+    // No context MSAA: the frame is drawn into the pipeline's own multisampled
+    // HDR buffer, and the canvas only ever receives a full-screen quad.
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
     this.mobile = isTouchDevice();
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, this.mobile ? 1.4 : 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -48,6 +50,24 @@ export class Game {
     // Lightning is the environment's event; the thunder that goes with it is
     // the mixer's, so the environment only has to say when one struck.
     this.env.onStrike = () => this.audio.thunder(0.6 + Math.random() * 0.4);
+    // The road's own state: temperature, water, rubber, dust. It persists per
+    // circuit between sessions and is what the tyres actually grip on.
+    this.condition = new TrackCondition();
+    this.condition.setTrack(this.track, this.trackKey);
+    addEventListener('pagehide', () => this.condition.save());
+    // Pixel ratio, MSAA, shadow map and post passes are one budget, owned by
+    // the pipeline. Phones start low and are capped before they cost frames
+    // the physics step would rather have. The road's water uniforms are
+    // shared so the reflections see the same puddles the road draws.
+    this.pipeline = new RenderPipeline(this.renderer, this.scene, this.camera, {
+      mobile: this.mobile, sun: this.env.sun, water: this.condition.uniforms,
+    });
+    this.env.quality = this.pipeline.tier.particles;
+    // A tier change re-spends the weather's particle budget too.
+    this.pipeline.onTier = (key, tier) => {
+      this.env.quality = tier.particles;
+      this.env.apply(this.env.visionKey, this.env.weatherKey);
+    };
     this.hud = new Hud(this.track);
     this.input = new Input();
     this.audio = new Audio();
@@ -70,6 +90,7 @@ export class Game {
 
     this.player = new Car(this.track, {
       name: 'YOU', headlights: true, chassis: CHASSIS[this.chassisKey],
+      setup: this.setupFor(this.chassisKey),
     });
     this.scene.add(this.player.mesh);
     this.rivals = [];
@@ -217,16 +238,37 @@ export class Game {
     this.marks.setSurface(this.track.spec);
     this.marks.clear();
     this.crew.setTrack(this.track);
+    this.condition.setTrack(this.track, key);
     for (const car of this.simulated) car.track = this.track;
   }
 
   // A chassis change is a different car, so the old one is replaced outright.
+  // The driver's setup for one vehicle, as saved from the garage. Stored as
+  // the garage left it (mode, sliders, preset) with the physical values in
+  // `values`; anything missing or out of range falls back to stock.
+  setupRecord(key) {
+    try {
+      return JSON.parse(localStorage.getItem(`apex.setup.${key}`) ?? 'null');
+    } catch {
+      return null;
+    }
+  }
+
+  setupFor(key) {
+    return clampSetup(CHASSIS[key], this.setupRecord(key)?.values ?? {});
+  }
+
+  saveSetup(key, record) {
+    try { localStorage.setItem(`apex.setup.${key}`, JSON.stringify(record)); } catch { /* full */ }
+    if (key === this.chassisKey) this.player.setSetup(record.values);
+  }
+
   setChassis(key) {
     if (key === this.chassisKey || !CHASSIS[key]) return;
     this.chassisKey = key;
     this.player.dispose(this.scene);
     this.player = new Car(this.track, {
-      name: 'YOU', headlights: true, chassis: CHASSIS[key],
+      name: 'YOU', headlights: true, chassis: CHASSIS[key], setup: this.setupFor(key),
     });
     this.scene.add(this.player.mesh);
     this.simulated[0] = this.player;
@@ -335,12 +377,119 @@ export class Game {
   #bindResize() {
     const resize = () => {
       const w = innerWidth, h = innerHeight;
-      this.renderer.setSize(w, h, false);
+      this.pipeline.setSize(w, h);
       this.camera.aspect = w / h;
       this.camera.updateProjectionMatrix();
     };
     addEventListener('resize', resize);
     resize();
+  }
+
+  // What the post passes need from the world this frame: how wet the road
+  // looks, which lights are in the air to scatter, and where the sun is.
+  #feedPipeline() {
+    const w = this.pipeline.world;
+    const c = this.condition;
+    const weather = this.env.weather;
+    const vision = this.env.vision;
+    w.wet = Math.min(1, c.wetness * 0.9 + c.standingWater * 0.25);
+    // Air that catches light: fog most, rain and spray a good deal, clear
+    // night air a trace. Beams only exist once the lights are on.
+    w.density = this.env.lightsOn
+      ? 0.003 + (1 - weather.fogScale) * 0.1 + c.wetness * 0.024 : 0;
+    w.lights = w.density > 0 ? this.#airLights() : [];
+    this.sunDir ??= new THREE.Vector3();
+    this.sunDir.set(...vision.sun).normalize();
+    w.sun = this.sunDir;
+    this.sunTint ??= new THREE.Vector3();
+    const tint = this.env.sun.color;
+    w.sunTint = this.sunTint.set(tint.r, tint.g, tint.b);
+    // Shafts belong to a real sun, strongest low in the sky, and to air with
+    // some haze in it; the moon, dusk and a closed-in storm have none.
+    const sunStrength = Math.max(0, vision.sunI - 0.9) / 1.5;
+    w.shafts = this.sunDir.y > 0.02 && weather.fogScale > 0.3
+      ? 0.5 * sunStrength * weather.lightScale * (1.2 - this.sunDir.y) : 0;
+    // The garage is a closed studio: no road, no weather, no sun.
+    if (this.showroom?.active) {
+      w.wet = 0;
+      w.density = 0;
+      w.shafts = 0;
+      w.lights = [];
+    }
+  }
+
+  // Lights in the air, nearest the camera first: the player's headlight beams,
+  // and every car's tail lights, which glow harder under braking.
+  #airLights() {
+    this.lightPool ??= [];
+    const out = [];
+    let n = 0;
+    const take = () => {
+      this.lightPool[n] ??= {
+        position: new THREE.Vector3(), direction: new THREE.Vector3(), color: new THREE.Vector3(),
+        cosOuter: 0, cosInner: 0, range: 0, hasDir: false,
+      };
+      return this.lightPool[n++];
+    };
+    this.lightAim ??= new THREE.Vector3();
+    for (const car of this.cars) {
+      if (!car.mesh?.visible) continue;
+      for (const beam of car.beams ?? []) {
+        if (beam.intensity <= 0) continue;
+        const l = take();
+        beam.getWorldPosition(l.position);
+        beam.target.getWorldPosition(this.lightAim);
+        l.direction.copy(this.lightAim).sub(l.position).normalize();
+        l.hasDir = true;
+        const k = beam.intensity * 0.06;
+        l.color.set(beam.color.r * k, beam.color.g * k, beam.color.b * k);
+        l.cosOuter = Math.cos(beam.angle);
+        l.cosInner = Math.cos(beam.angle * (1 - beam.penumbra));
+        l.range = beam.distance || 90;
+        out.push(l);
+      }
+      const tail = car.tailMat?.emissiveIntensity ?? 0;
+      if (tail > 0 && car.chassis) {
+        const l = take();
+        l.position.set(0, car.chassis.body.ride + 0.55, -car.chassis.body.length * 0.5);
+        car.mesh.localToWorld(l.position);
+        l.hasDir = false;
+        const k = tail * 0.75;
+        l.color.set(1.0 * k, 0.04 * k, 0.02 * k);
+        l.range = 14;
+        out.push(l);
+      }
+    }
+    const eye = this.camera.position;
+    out.sort((a, b) => a.position.distanceToSquared(eye) - b.position.distanceToSquared(eye));
+    return out;
+  }
+
+  // Conditions picked in the menu describe weather the circuit has already
+  // been out in; conditions changed on track arrive gradually.
+  #settleCondition() {
+    this.condition.settle(this.env.weather, this.env.vision,
+      this.env.visionKey, this.env.weatherKey);
+    this.#pushCondition(0);
+    // A new scene is a cut, not something the camera's exposure should
+    // adapt its way into.
+    this.pipeline.cut();
+  }
+
+  // Advance the road's state and show it: water on the surface, rubber in it.
+  #pushCondition(dt) {
+    const c = this.condition;
+    if (dt > 0) {
+      c.update(dt, {
+        weather: this.env.weather, vision: this.env.vision,
+        visionKey: this.env.visionKey, weatherKey: this.env.weatherKey,
+      });
+    }
+    if (Math.abs(c.wetness - (this.env.roadWet ?? -1)) > 0.004
+      || Math.abs(c.standingWater - (this.env.roadStanding ?? -1)) > 0.004) {
+      this.env.setWetness(c.wetness, c.standingWater);
+    }
+    c.paint();
   }
 
   // The circuit decides the music and the car decides the engine note.
@@ -352,6 +501,8 @@ export class Game {
 
   #applyEnv() {
     this.env.apply(VISION_KEYS[this.visionIndex], WEATHER_KEYS[this.weatherIndex]);
+    this.pipeline.setGrade(gradeFor(this.env.visionKey, this.env.weather));
+    this.effects.lightLevel = this.env.lightLevel;
     for (const car of this.cars) car.setHeadlights(this.env.lightsOn, this.env.weather.wet);
     // The conditions are heard as well as seen.
     this.audio.setWeather(this.env.weather.wet, this.env.weather.wind);
@@ -359,14 +510,9 @@ export class Game {
 
   // Display and control preferences the player set. Applied immediately so a
   // change is visible in the preview behind the settings panel.
-  applySettings({ quality, shadows, steering, touchControls }) {
-    if (quality !== undefined) {
-      const scale = { low: 0.75, medium: 1, high: 1.35 }[quality] ?? 1;
-      const cap = this.mobile ? 1.4 : 2;
-      this.renderer.setPixelRatio(Math.min(devicePixelRatio * scale, cap));
-      this.env.quality = { low: 0.25, medium: 0.6, high: 1 }[quality] ?? 0.6;
-      this.env.apply(VISION_KEYS[this.visionIndex], WEATHER_KEYS[this.weatherIndex]);
-    }
+  applySettings({ quality, grading, shadows, steering, touchControls }) {
+    if (quality !== undefined) this.pipeline.setQuality(quality);
+    if (grading !== undefined) this.pipeline.grading = grading;
     if (shadows !== undefined) {
       this.renderer.shadowMap.enabled = shadows;
       this.scene.traverse((node) => { if (node.material) node.material.needsUpdate = true; });
@@ -409,6 +555,7 @@ export class Game {
     this.simulated = [this.player];
 
     this.#applyEnv();
+    this.#settleCondition();
     this.#applyAudioProfile();
     this.player.placeAt(this.track.gridSlot(0));
     this.player.render(1);
@@ -477,7 +624,6 @@ export class Game {
     this.introV.set(local[0], local[1], local[2]);
     this.camera.position.copy(car.mesh.localToWorld(this.introV));
     this.camera.lookAt(car.mesh.localToWorld(this.introLook.set(at[0], at[1], at[2])));
-    this.camera.rotation.z = 0;
     const fov = 34 + ease * 6;
     if (this.camera.fov !== fov) {
       this.camera.fov = fov;
@@ -485,7 +631,7 @@ export class Game {
     }
     // The turntable keeps its glow alive behind the panel.
     this.showroom.update(1 / 60, time);
-    this.renderer.render(this.scene, this.camera);
+    this.pipeline.render(1 / 60);
   }
 
   // The last beat of the boot sequence: the car lights up.
@@ -575,8 +721,10 @@ export class Game {
       centre.y + (portrait ? eye + 0.35 : eye),
       centre.z + Math.cos(this.previewAngle) * radius,
     );
+    // lookAt against world up is already free of roll. Zeroing rotation.z
+    // afterwards is not: once the camera faces +Z the XYZ Euler angles come
+    // out as x = z = pi, and clearing z turns the picture upside down.
     this.camera.lookAt(centre.x, centre.y + (portrait ? -0.9 : 0.58), centre.z);
-    this.camera.rotation.z = 0;
     if (this.camera.fov !== 38) {
       this.camera.fov = 38;
       this.camera.updateProjectionMatrix();
@@ -602,7 +750,7 @@ export class Game {
     } else {
       for (const r of this.rivals) this.scene.remove(r.mesh);
       this.#clearRemotes();
-      this.rivals = makeRivals(this.track, this.mode.rivals);
+      this.rivals = makeRivals(this.track, this.mode.rivals, this.chassisKey);
       for (const r of this.rivals) this.scene.add(r.mesh);
       this.cars = [this.player, ...this.rivals];
       this.simulated = [...this.cars];
@@ -631,11 +779,15 @@ export class Game {
       car.pitState.stops = 0;
       car.pitChoice = this.mode.tyre ?? 'medium';
       car.setCompound(car.ai ? this.#rivalStart(car) : (this.mode.tyre ?? 'medium'));
+      car.brakes.reset(this.condition.air);
     });
     this.nextCompound = this.mode.tyre ?? 'medium';
     this.assist = false;
 
+    // The instrument and the cards follow the vehicle being raced.
+    this.hud.setVehicle(this.player);
     this.#applyEnv();
+    this.#settleCondition();
     this.#applyAudioProfile();
     this.clock = 0;
     this.accumulator = 0;
@@ -671,6 +823,7 @@ export class Game {
 
   stop() {
     this.state = 'idle';
+    this.condition.save();
     this.multiplayer = false;
     this.hud.show(false);
     this.touch.show(false);
@@ -750,6 +903,7 @@ export class Game {
 
   #finish() {
     this.state = 'finished';
+    this.condition.save();
     const order = this.standings();
     const place = order.indexOf(this.player) + 1;
     this.hud.toast('FINISH', 2.2, '#ffc94d');
@@ -864,9 +1018,12 @@ export class Game {
     const fwd = car.renderForward;
     let target, look;
 
+    // Each class brings its own mounts: a helmet camera on a bike, a high cab
+    // on a bus, a camera an inch off the ground on a kart.
+    const rig = car.profile?.camera ?? { back: 8.4, high: 3.5, look: 1.2, hood: 1.32, hoodForward: 0.35, roll: 0 };
     if (mode === 'hood') {
-      target = here.clone().addScaledVector(fwd, 0.35).setY(here.y + 1.32);
-      look = here.clone().addScaledVector(fwd, 30).setY(here.y + 1.6);
+      target = here.clone().addScaledVector(fwd, rig.hoodForward).setY(here.y + rig.hood);
+      look = here.clone().addScaledVector(fwd, 30).setY(here.y + rig.hood + 0.28);
       this.camPos.copy(target);
     } else if (mode === 'cinematic') {
       // Trackside pole set back from the corner, high enough to clear the
@@ -883,13 +1040,14 @@ export class Game {
       // down, braking pitches it forward and up, and a car that is sideways is
       // watched from slightly outside the slide rather than from behind the
       // bootlid — which is where a camera on a real chase car ends up.
-      const back = 8.4 + Math.min(4.5, car.kmh * 0.016) + this.camSquat * 1.4;
-      const high = 3.5 + Math.min(1.6, car.kmh * 0.005) - this.camSquat * 0.5;
+      const scale = rig.back / 8.4;
+      const back = rig.back + Math.min(4.5, car.kmh * 0.016) * scale + this.camSquat * 1.4;
+      const high = rig.high + Math.min(1.6, car.kmh * 0.005) * scale - this.camSquat * 0.5;
       target = here.clone().addScaledVector(fwd, -back).setY(here.y + high);
       const drift = THREE.MathUtils.clamp((car.sideslip ?? 0) * 0.28, -2.4, 2.4);
       target.addScaledVector(car.renderRight, drift);
       this.camPos.lerp(target, Math.min(1, dt * 6.5));
-      look = here.clone().addScaledVector(fwd, 12).setY(here.y + 1.2)
+      look = here.clone().addScaledVector(fwd, 12 * Math.max(0.6, scale)).setY(here.y + rig.look)
         .addScaledVector(car.renderRight, drift * 0.55);
     }
 
@@ -905,6 +1063,10 @@ export class Game {
       const bank = THREE.MathUtils.clamp((car.latAccel ?? 0) * -0.0022, -0.05, 0.05);
       this.camBank += (bank - this.camBank) * Math.min(1, dt * 5);
       this.camera.rotateZ(this.camBank);
+      // On a bike the rider's head leans with the machine, most of the way.
+      if (rig.roll && car.lean) {
+        this.camera.rotateZ((mode === 'hood' ? rig.roll : rig.roll * 0.18) * car.lean);
+      }
       // Speed shows up as vibration through the mount, not as streaks over the
       // whole screen. It is inches, and it only exists at the top end.
       const buzz = Math.max(0, car.kmh - 150) / 420;
@@ -982,16 +1144,43 @@ export class Game {
   // Cars are resolved as circles on the ground plane: push them apart, then
   // exchange momentum along the contact normal. Remote cars are replaying a
   // snapshot and cannot be moved, so they take no push and give all of it back.
-  #contact(a, b, bothDynamic) {
-    const dx = b.position.x - a.position.x;
-    const dz = b.position.z - a.position.z;
-    const distSq = dx * dx + dz * dz;
-    const reach = a.radius + b.radius;
-    if (distSq > reach * reach || distSq < 1e-6) return;
+  // Where hull circle `k` of a vehicle is on the ground right now.
+  #hullPoint(car, k) {
+    const h = car.hull?.[k];
+    const off = h ? h.offset : 0;
+    return {
+      x: car.position.x + Math.sin(car.yaw) * off,
+      z: car.position.z + Math.cos(car.yaw) * off,
+      r: h ? h.radius : car.radius,
+      off,
+    };
+  }
 
-    const dist = Math.sqrt(distSq);
-    const nx = dx / dist, nz = dz / dist;
-    const overlap = reach - dist;
+  // Vehicles collide as rows of circles, so a bus is long and narrow and a
+  // bike is small, instead of every vehicle being one disc. The deepest pair
+  // of circles decides the contact.
+  #contact(a, b, bothDynamic) {
+    const cx = b.position.x - a.position.x;
+    const cz = b.position.z - a.position.z;
+    const bound = a.radius + b.radius;
+    if (cx * cx + cz * cz > bound * bound) return;
+    let best = null;
+    for (let i = 0; i < (a.hull?.length ?? 1); i++) {
+      const pa = this.#hullPoint(a, i);
+      for (let j = 0; j < (b.hull?.length ?? 1); j++) {
+        const pb = this.#hullPoint(b, j);
+        const dx = pb.x - pa.x, dz = pb.z - pa.z;
+        const d2 = dx * dx + dz * dz;
+        const reach = pa.r + pb.r;
+        if (d2 >= reach * reach || d2 < 1e-6) continue;
+        const d = Math.sqrt(d2);
+        if (!best || reach - d > best.overlap) best = { dx, dz, d, overlap: reach - d, offA: pa.off };
+      }
+    }
+    if (!best) return;
+    const dist = best.d;
+    const nx = best.dx / dist, nz = best.dz / dist;
+    const overlap = best.overlap;
     const share = bothDynamic ? 0.5 : 1;
     a.position.x -= nx * overlap * share;
     a.position.z -= nz * overlap * share;
@@ -1014,10 +1203,14 @@ export class Game {
       b.applyImpulse(new THREE.Vector3(-nx * j * invB, 0, -nz * j * invB));
     }
 
-    // A hit off the nose twists the car; that twist is most of the feel.
-    const twist = (Math.cos(a.yaw) * nx - Math.sin(a.yaw) * nz) * closing * 0.018;
-    a.yaw -= twist;
-    if (bothDynamic) b.yaw += twist;
+    // A hit off the nose twists the car; that twist is most of the feel. A
+    // hit far from the centre of mass (the tail of a bus) twists it more, and
+    // a heavy vehicle barely twists at all when something light hits it.
+    const lever = 1 + Math.abs(best.offA) * 0.25;
+    const twist = (Math.cos(a.yaw) * nx - Math.sin(a.yaw) * nz) * closing * 0.018 * lever;
+    const massA = a.tune.mass, massB = bothDynamic ? b.tune.mass : massA;
+    a.yaw -= twist * Math.min(1.5, (2 * massB) / (massA + massB));
+    if (bothDynamic) b.yaw += twist * Math.min(1.5, (2 * massA) / (massA + massB));
 
     this.#reportImpact(closing, (a.position.x + b.position.x) / 2,
       (a.position.y + b.position.y) / 2, (a.position.z + b.position.z) / 2, a, b);
@@ -1039,16 +1232,21 @@ export class Game {
   #contactSolid(car) {
     const near = this.track.solidsNear(car.position.x, car.position.z, car.radius + 4);
     for (const solid of near) {
-      const dx = solid.x - car.position.x;
-      const dz = solid.z - car.position.z;
-      const distSq = dx * dx + dz * dz;
-      const reach = car.radius + solid.radius;
-      if (distSq > reach * reach || distSq < 1e-6) continue;
-
-      const dist = Math.sqrt(distSq);
-      const nx = dx / dist, nz = dz / dist;
-      car.position.x -= nx * (reach - dist);
-      car.position.z -= nz * (reach - dist);
+      // The hull circle nearest the obstacle is the one that hits it.
+      let hit = null;
+      for (let k = 0; k < (car.hull?.length ?? 1); k++) {
+        const p = this.#hullPoint(car, k);
+        const dx = solid.x - p.x, dz = solid.z - p.z;
+        const d2 = dx * dx + dz * dz;
+        const reach = p.r + solid.radius;
+        if (d2 >= reach * reach || d2 < 1e-6) continue;
+        const d = Math.sqrt(d2);
+        if (!hit || reach - d > hit.over) hit = { dx, dz, d, over: reach - d };
+      }
+      if (!hit) continue;
+      const nx = hit.dx / hit.d, nz = hit.dz / hit.d;
+      car.position.x -= nx * hit.over;
+      car.position.z -= nz * hit.over;
 
       const closing = car.velocity.x * nx + car.velocity.z * nz;
       if (closing <= 0) continue;
@@ -1075,8 +1273,10 @@ export class Game {
   // One fixed physics tick. Nothing in here may depend on the frame rate.
   #step(dt) {
     this.clock += dt;
-    // Weather grip and the circuit's own surface both bite at once.
-    const grip = this.env.grip * this.track.surfaceGrip;
+    // The road under each car (water, temperature, rubber, dirt) and the
+    // circuit's own surface both bite at once.
+    const wet = this.condition.wetness;
+    const climate = this.condition.climate;
 
     if (this.state === 'countdown' && this.multiplayer) {
       // Nothing to tick: the 'go' message flips the state.
@@ -1110,7 +1310,8 @@ export class Game {
         const driver = live ? this.input.sample(dt) : held(car);
         car.input = live && this.assist ? this.#assistInput(car, driver) : driver;
       }
-      car.update(dt, grip, this.env.weather.wet);
+      car.update(dt, this.condition.gripFor(car) * this.track.surfaceGrip, wet, climate);
+      if (live) this.condition.drive(dt, car);
       if (this.state === 'countdown') {
         car.velocity.set(0, 0, 0);
         car.speed = 0;
@@ -1160,23 +1361,30 @@ export class Game {
     const car = this.player;
     if (this.state === 'idle') { this.audio.silenceEngine(); return; }
 
-    const ratios = CAR.gearRatios;
+    // Revs are where the vehicle sits inside its own gear; a single-speed
+    // electric drive spins in proportion to road speed alone.
+    const ratios = car.tune.gearRatios ?? CAR.gearRatios;
     const gear = typeof car.gear === 'number' ? car.gear : 1;
     const low = ratios[gear - 1] ?? 0;
     const high = ratios[gear] ?? ratios[ratios.length - 1];
-    const rpm = Math.min(1, Math.max(0.08, (car.kmh - low) / Math.max(1, high - low)));
+    const rpm = car.tune.electric
+      ? Math.min(1, Math.max(0.04, car.kmh / (car.tune.topLimit * 3.6)))
+      : Math.min(1, Math.max(0.08, (car.kmh - low) / Math.max(1, high - low)));
 
     const firing = !!car.boost?.firing;
     if (firing && !this.wasBoosting) this.audio.onBoost();
     this.wasBoosting = firing;
 
+    // The tachometer reads the same revs the engine note is made from.
+    car.rpm = rpm;
     this.audio.engine({
       rpm, load: car.input.throttle, kmh: car.kmh, slide: car.slide ?? 0,
       boosting: firing, gear,
     });
     this.audio.tyres({
       kmh: car.kmh, slide: car.slide ?? 0, lockup: car.lockup ?? 0,
-      off: !car.onRoad, wet: this.env.weather.wet, surface: this.track.spec.surface,
+      off: !car.onRoad, wet: this.condition.wetness, surface: this.track.spec.surface,
+      heat: car.tyres.overheat,
     });
   }
 
@@ -1184,7 +1392,10 @@ export class Game {
     requestAnimationFrame(this.loop);
     const frame = Math.min(0.25, (now - this.lastFrame) / 1000);
     this.lastFrame = now;
-    if (this.state === 'idle') { this.renderer.render(this.scene, this.camera); return; }
+    // Grain belongs to the cinematic camera during a race, never the menu.
+    this.pipeline.cinematic = (this.state === 'racing' || this.state === 'countdown')
+      && CAMERAS[this.cameraMode] === 'cinematic';
+    if (this.state === 'idle') { this.pipeline.render(frame); return; }
 
     if (this.state === 'preview') {
       this.#orbitPreview(frame);
@@ -1193,9 +1404,11 @@ export class Game {
       if (this.previewStyle !== 'studio') {
         this.track.update(frame, 0.3);
         this.env.update(frame, this.camera, performance.now() / 1000);
+        this.#pushCondition(frame);
       }
       this.effects.update(frame);
-      this.renderer.render(this.scene, this.camera);
+      this.#feedPipeline();
+      this.pipeline.render(frame);
       return;
     }
 
@@ -1226,7 +1439,7 @@ export class Game {
 
     // Everything that slides leaves rubber, not only the car being driven.
     for (const car of this.simulated) this.#layRubber(car);
-    this.effects.tyreSmoke(this.player, frame, this.env.weather.wet);
+    this.effects.tyreSmoke(this.player, frame, this.condition.wetness);
     this.effects.update(frame);
     this.#updateCrew(frame);
     // The crowd hums along with the pace of the race and swells when something
@@ -1238,10 +1451,14 @@ export class Game {
     this.audio.crowd(draw, excite, frame);
     this.#updateSound(frame);
     this.env.update(frame, this.camera, this.clock);
+    this.#pushCondition(frame);
     this.#updateCamera(frame);
     if (this.debug?.on) {
       this.debug.build(this.track);
-      this.debug.update(this.track, this.player, { fps: 1 / Math.max(frame, 1e-3) });
+      this.debug.update(this.track, this.player, {
+        fps: 1 / Math.max(frame, 1e-3), render: this.pipeline.stats(),
+        condition: this.condition,
+      });
     }
 
     this.#armBoost();
@@ -1257,8 +1474,13 @@ export class Game {
       clock: this.clock,
       env: this.env,
       surface: this.track.spec,
+      condition: this.condition,
+      grip: this.condition.gripFor(this.player) * this.track.surfaceGrip,
       wallet: this.wallet,
-      tyres: this.mode.tyres ? this.player.tyres : null,
+      // Heat matters in every mode; wear and the pit wall only where they run.
+      tyres: this.player.tyres,
+      wear: !!this.mode.tyres,
+      brakes: this.player.brakes,
       pit: this.mode.tyres
         ? {
           lane: this.player.inPitLane,
@@ -1277,6 +1499,7 @@ export class Game {
     }
     document.getElementById('touch-pit')?.classList.toggle('held', !!this.assist);
 
-    this.renderer.render(this.scene, this.camera);
+    this.#feedPipeline();
+    this.pipeline.render(frame);
   }
 }

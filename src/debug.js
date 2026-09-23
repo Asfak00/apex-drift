@@ -115,8 +115,35 @@ export class DebugView {
     const p = track.project(car.position, car.hintIndex);
     const room = track.verge(p.index, Math.sign(p.lateral) || 1);
     const surface = track.terrainY(p.height, Math.abs(p.lateral), room);
+    const r = state.render;
     const rows = [
       ['fps', state.fps?.toFixed(0) ?? '-'],
+      ...(r ? [
+        ['frame ms avg', r.avg.toFixed(2)],
+        ['frame ms 1%', r.low.toFixed(2)],
+        ['gpu ms', r.gpuMs === null ? 'n/a' : r.gpuMs.toFixed(2)],
+        ['tier', r.tier],
+        ['pixel ratio', r.pixelRatio],
+        ['msaa', String(r.msaa)],
+        ['post passes', `${r.passes}: ${r.active}`],
+        ['shadow map', String(this.sun?.shadow?.mapSize.x ?? '-')],
+        ['gpu', r.gpu.slice(0, 40)],
+      ] : []),
+      ...(state.condition ? (() => {
+        const c = state.condition;
+        const bin = Math.min(127, Math.floor(p.t * 128));
+        return [
+          ['track temp', `${c.temperature.toFixed(1)} C`],
+          ['wetness', c.wetness.toFixed(3)],
+          ['standing water', c.standingWater.toFixed(3)],
+          ['dust', c.dust.toFixed(3)],
+          ['rubber here', c.rubber[bin].toFixed(3)],
+          ['line here', c.line[bin].toFixed(2)],
+          ['debris here', c.debris[bin].toFixed(2)],
+          ['evolution', c.evolution.toFixed(3)],
+          ['road grip', c.gripFor(car).toFixed(3)],
+        ];
+      })() : []),
       ['draw calls', info?.render.calls ?? '-'],
       ['triangles', info?.render.triangles?.toLocaleString() ?? '-'],
       ['programs', info?.programs?.length ?? '-'],
@@ -136,6 +163,19 @@ export class DebugView {
         .map((v) => v.toFixed(1)).join(' ')],
       ['cam fov', this.camera.fov.toFixed(1)],
       ['slide', (car.slide ?? 0).toFixed(2)],
+      ...(car.tyres?.temps ? [
+        ['tyre C FL FR', car.tyres.temps.slice(0, 2).map((t) => t.toFixed(0)).join(' ')],
+        ['tyre C RL RR', car.tyres.temps.slice(2).map((t) => t.toFixed(0)).join(' ')],
+        ['tyre psi', [0, 1, 2, 3].map((k) => car.tyres.pressure(k).toFixed(1)).join(' ')],
+        ['tyre window', car.tyres.spec.window.join('-')],
+        ['axle grip F R', [0, 1].map((a) => car.tyres.axleGrip(a, car.leftShare).toFixed(3))
+          .join(' ')],
+        ['left load', (car.leftShare ?? 0.5).toFixed(2)],
+      ] : []),
+      ...(car.brakes ? [
+        ['brake C F R', car.brakes.temps.map((t) => t.toFixed(0)).join(' ')],
+        ['brake eff', car.brakes.efficiency.toFixed(3)],
+      ] : []),
       ['sideslip', (car.sideslip ?? 0).toFixed(2)],
     ];
     this.readout.textContent = rows.map(([k, v]) => `${k.padEnd(16)}${v}`).join('\n');

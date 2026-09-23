@@ -13,18 +13,18 @@
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="Apex Drift" />
 <meta property="og:title" content="Apex Drift — Three.js circuit racer" />
-<meta property="og:description" content="Seven cars, eight tracks, weather and night racing, and LAN multiplayer from one link. No install." />
+<meta property="og:description" content="Fourteen vehicles from karts and superbikes to buses, live weather with wet-road reflections, tyre and brake heat, real setups, and LAN multiplayer. Free in your browser." />
 <meta property="og:url" content="%ORIGIN%/" />
 <meta property="og:image" content="%ORIGIN%/assets/og-cover.jpg" />
 <meta property="og:image:type" content="image/jpeg" />
 <meta property="og:image:width" content="1200" />
 <meta property="og:image:height" content="630" />
-<meta property="og:image:alt" content="A Meridian GT on the Apex Ring circuit with the race setup panel open." />
+<meta property="og:image:alt" content="A red Vermiglio V12 drifting through golden-hour light with tyre smoke behind it, under the Apex Drift logo and a row of feature labels." />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:title" content="Apex Drift — Three.js circuit racer" />
-<meta name="twitter:description" content="Seven cars, eight tracks, weather and night racing, and LAN multiplayer from one link. No install." />
+<meta name="twitter:description" content="Fourteen vehicles from karts and superbikes to buses, live weather with wet-road reflections, tyre and brake heat, real setups, and LAN multiplayer. Free in your browser." />
 <meta name="twitter:image" content="%ORIGIN%/assets/og-cover.jpg" />
-<meta name="twitter:image:alt" content="A Meridian GT on the Apex Ring circuit with the race setup panel open." />
+<meta name="twitter:image:alt" content="A red Vermiglio V12 drifting through golden-hour light with tyre smoke behind it, under the Apex Drift logo and a row of feature labels." />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2305080f'/%3E%3Cpath d='M32 10 L54 56 H41 L32 34 L23 56 H10 Z' fill='%234de3b0'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css" />
 <script type="importmap">
@@ -41,77 +41,128 @@
   <canvas id="scene"></canvas>
 
   <div id="hud" hidden>
-    <div class="hud-corner tl">
-      <div class="panel">
-        <div class="row"><span class="k">LAP</span><span class="v" id="lap">1/3</span></div>
-        <div class="row"><span class="k">POS</span><span class="v" id="pos">1/4</span></div>
-      </div>
-      <div class="panel times">
-        <div class="row"><span class="k">TIME</span><span class="v mono" id="time">0:00.00</span></div>
+    <!-- Two columns of glass cards with fixed gaps between them. Each column
+         scales as a unit when the window is short or narrow, so no card ever
+         lands on top of another. -->
+    <div class="hud-col left" id="hud-left">
+      <section class="card race" aria-label="Position and lap">
+        <div class="race-pos">
+          <span class="k">POS</span>
+          <span class="pos-big"><b id="pos">1</b><small id="pos-of">/4</small></span>
+        </div>
+        <div class="race-lap" id="race-lap">
+          <span class="k">LAP</span>
+          <b class="mono" id="lap">1/3</b>
+          <span class="lap-bar" aria-hidden="true"><i id="lap-progress"></i></span>
+        </div>
+      </section>
+      <section class="card timing" aria-label="Lap times">
+        <div class="time-now">
+          <span class="mono" id="time">0:00.00</span>
+          <span class="delta mono" id="delta" aria-label="Gap to best lap"></span>
+        </div>
         <div class="row"><span class="k">LAST</span><span class="v mono dim" id="last">--:--.--</span></div>
         <div class="row"><span class="k">BEST</span><span class="v mono accent" id="best">--:--.--</span></div>
-      </div>
+      </section>
+      <section class="card gaps" aria-label="Gaps">
+        <div class="gap-row"><span class="k">AHEAD</span><span class="v sm" id="gap-ahead">&mdash;</span></div>
+        <div class="gap-row"><span class="k">BEHIND</span><span class="v sm" id="gap-behind">&mdash;</span></div>
+      </section>
     </div>
 
-    <div class="hud-corner tl-low">
-      <div class="panel gaps">
-        <div class="row"><span class="k">AHEAD</span><span class="v sm" id="gap-ahead">&mdash;</span></div>
-        <div class="row"><span class="k">BEHIND</span><span class="v sm" id="gap-behind">&mdash;</span></div>
+    <div class="hud-col right" id="hud-right">
+      <div class="hud-stack top" id="hud-top">
+        <canvas id="minimap" width="220" height="220"></canvas>
+        <section class="card env" aria-label="Conditions">
+          <div class="row"><span class="k">TRACK</span><span class="v" id="track-name">Apex Ring</span></div>
+          <div class="row"><span class="k">SKY</span><span class="v"><span id="vision-name">Day</span> &middot; <span id="weather-name">Clear</span></span></div>
+          <div class="row"><span class="k">ROAD</span><span class="v road-state" id="road-state">24&deg; DRY</span></div>
+          <div class="grip-row">
+            <span class="k">GRIP</span>
+            <span class="grip-bar" aria-hidden="true"><i id="grip-fill"></i></span>
+            <span class="v mono" id="grip">100%</span>
+          </div>
+        </section>
       </div>
-    </div>
 
-    <div class="hud-corner tr">
-      <canvas id="minimap" width="200" height="200"></canvas>
-      <div class="panel env">
-        <div class="row"><span class="k">TRACK</span><span class="v" id="track-name">Apex Ring</span></div>
-        <div class="row"><span class="k">SKY</span><span class="v" id="vision-name">Day</span></div>
-        <div class="row"><span class="k">WX</span><span class="v" id="weather-name">Clear</span></div>
-        <div class="row"><span class="k">GRIP</span><span class="v" id="grip">100%</span></div>
-      </div>
-    </div>
+      <div class="hud-stack bottom" id="hud-bottom">
+        <section class="card tyres" id="tyres" hidden aria-label="Tyres">
+          <div class="tyre-head">
+            <span class="tyre-badge" id="tyre-badge">M</span>
+            <span class="k">TYRES</span>
+            <span class="v sm mono" id="tyre-life">100%</span>
+          </div>
+          <div class="tyre-body">
+            <span class="thermal" id="thermal" role="img" aria-label="Tyre and brake temperatures">
+              <i data-w="0">--</i><i data-w="1">--</i><b data-b="0">--</b>
+              <i data-w="2">--</i><i data-w="3">--</i><b data-b="1">--</b>
+            </span>
+          </div>
+          <span class="tyre-track" id="tyre-track"><span class="tyre-fill" id="tyre-fill"></span></span>
+          <div class="pit-row" id="pit-row" hidden>
+            <span class="pit-state" id="pit-state">PIT</span>
+            <span class="pit-picks">
+              <button class="pick" type="button" data-tyre="soft">S</button>
+              <button class="pick" type="button" data-tyre="medium">M</button>
+              <button class="pick" type="button" data-tyre="hard">H</button>
+              <button class="pick call" type="button" id="pit-call">BOX</button>
+            </span>
+          </div>
+          <button class="pit-btn" id="pit-assist" type="button">
+            <span class="cone">&#9650;</span> ENTER PIT LANE <kbd class="boost-key">P</kbd>
+          </button>
+        </section>
 
-    <div class="hud-corner br">
-      <div class="panel tyres" id="tyres" hidden>
-        <div class="tyre-head">
-          <span class="tyre-badge" id="tyre-badge">M</span>
-          <span class="k">TYRES</span>
-          <span class="v sm" id="tyre-life">100%</span>
-        </div>
-        <span class="tyre-track"><span class="tyre-fill" id="tyre-fill"></span></span>
-        <div class="pit-row" id="pit-row" hidden>
-          <span class="pit-state" id="pit-state">PIT</span>
-          <span class="pit-picks">
-            <button class="pick" type="button" data-tyre="soft">S</button>
-            <button class="pick" type="button" data-tyre="medium">M</button>
-            <button class="pick" type="button" data-tyre="hard">H</button>
-            <button class="pick call" type="button" id="pit-call">BOX</button>
-          </span>
-        </div>
-        <button class="pit-btn" id="pit-assist" type="button">
-          <span class="cone">&#9650;</span> ENTER PIT LANE <kbd class="boost-key">P</kbd>
-        </button>
-      </div>
-      <div class="gauge">
-        <svg viewBox="0 0 240 164" id="gauge-svg" aria-hidden="true">
-          <path class="gauge-track" d="M38 132 A 82 82 0 0 1 202 132" />
-          <path class="gauge-fill" id="gauge-fill" d="M38 132 A 82 82 0 0 1 202 132" />
-          <g id="gauge-ticks"></g>
-          <line class="gauge-needle" id="needle" x1="120" y1="132" x2="120" y2="62" />
-          <circle class="gauge-hub" cx="120" cy="132" r="6" />
-        </svg>
-        <div class="readout">
-          <span class="speed mono" id="speed">0</span>
-          <span class="unit">KM/H</span>
-          <span class="gear-badge mono" id="gear">N</span>
-        </div>
-        <button class="boost-btn" id="boost-btn" type="button">
-          <span class="bolt">&#9889;</span> BOOST <kbd class="boost-key">Shift</kbd>
-        </button>
-        <div class="boost" id="boost">
-          <span class="boost-label">BOOST</span>
-          <span class="boost-track"><span class="boost-fill" id="boost-fill"></span></span>
-          <span class="boost-charges mono" id="boost-charges">10</span>
-        </div>
+        <!-- The instrument: a see-through dial scaled to the vehicle's own top
+             speed, a rev arc with its redline, shift lights, and the digital
+             speed and gear in the middle. -->
+        <section class="dash" id="dash" aria-label="Speed and gear">
+          <svg class="dial" id="dial" viewBox="0 0 320 320" aria-hidden="true">
+            <defs>
+              <radialGradient id="dial-face" cx="50%" cy="46%" r="54%">
+                <stop offset="0" stop-color="#0c0e12" stop-opacity=".52"/>
+                <stop offset=".78" stop-color="#07080a" stop-opacity=".3"/>
+                <stop offset="1" stop-color="#07080a" stop-opacity="0"/>
+              </radialGradient>
+              <linearGradient id="dial-glass" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#fff" stop-opacity=".12"/>
+                <stop offset=".35" stop-color="#fff" stop-opacity="0"/>
+              </linearGradient>
+              <linearGradient id="rev-grad" x1="0" y1="1" x2="1" y2="0">
+                <stop offset="0" stop-color="#dfe6f0"/>
+                <stop offset=".7" stop-color="#ffc94d"/>
+                <stop offset="1" stop-color="#ff3a3f"/>
+              </linearGradient>
+            </defs>
+            <circle cx="160" cy="160" r="156" fill="url(#dial-face)"/>
+            <circle class="dial-rim" cx="160" cy="160" r="152"/>
+            <path class="rev-track" id="rev-track"/>
+            <path class="rev-red" id="rev-red"/>
+            <path class="rev-fill" id="rev-fill"/>
+            <g id="dial-ticks"></g>
+            <path class="boost-arc-track" id="boost-arc-track"/>
+            <path class="boost-arc" id="boost-arc"/>
+            <g id="shift-lights" class="shift-lights"></g>
+            <g id="needle-group">
+              <path class="needle" d="M157.6 160 L159.2 40 L160.8 40 L162.4 160 L161 186 L159 186 Z"/>
+            </g>
+            <circle class="hub" cx="160" cy="160" r="11"/>
+            <circle cx="160" cy="160" r="156" fill="url(#dial-glass)" pointer-events="none"/>
+          </svg>
+          <div class="dash-readout">
+            <span class="gear-big mono" id="gear">N</span>
+            <span class="speed mono" id="speed">0</span>
+            <span class="unit">KM/H</span>
+          </div>
+          <div class="boost" id="boost">
+            <span class="boost-label">BOOST</span>
+            <span class="boost-track"><span class="boost-fill" id="boost-fill"></span></span>
+            <span class="boost-charges mono" id="boost-charges">10</span>
+          </div>
+          <button class="boost-btn" id="boost-btn" type="button">
+            <span class="bolt">&#9889;</span> BOOST <kbd class="boost-key">Shift</kbd>
+          </button>
+        </section>
       </div>
     </div>
 
@@ -194,6 +245,20 @@
           <label>Choose vehicle</label>
           <div class="opts" id="pick-chassis"></div>
         </div>
+        <!-- Setup: every control is a physical quantity the car's physics
+             reads. Simple mode moves several of them together. -->
+        <section class="tune" id="tune" data-view="garage">
+          <div class="tune-head">
+            <label>Setup</label>
+            <div class="seg" id="tune-mode" role="group" aria-label="Setup mode">
+              <button type="button" data-mode="simple">Simple</button>
+              <button type="button" data-mode="advanced">Advanced</button>
+            </div>
+          </div>
+          <div class="chips" id="tune-presets" role="group" aria-label="Presets"></div>
+          <div class="tune-controls" id="tune-controls"></div>
+          <button type="button" class="tune-reset" id="tune-reset">Reset to stock</button>
+        </section>
         <div class="field" data-view="tracks">
           <label>Track</label>
           <div class="opts" id="pick-track"></div>
@@ -342,10 +407,17 @@
         <label class="row-set">
           <span>Quality</span>
           <select id="set-quality">
+            <option value="auto" selected>Auto (60 fps target)</option>
+            <option value="performance">Performance</option>
             <option value="low">Low</option>
-            <option value="medium" selected>Medium</option>
+            <option value="medium">Medium</option>
             <option value="high">High</option>
+            <option value="ultra">Ultra</option>
           </select>
+        </label>
+        <label class="row-set">
+          <span>Colour grading</span>
+          <input type="checkbox" id="set-grading" class="switch" checked />
         </label>
         <label class="row-set">
           <span>Shadows</span>

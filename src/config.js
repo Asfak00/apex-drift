@@ -202,6 +202,58 @@ export const CHASSIS = {
     drive: { power: 1.16, mass: 0.86, grip: 1.18, steer: 1.02, brake: 1.20 },
     body: { width: 2.08, length: 4.66, roof: 0.38, ride: 0.34, wing: 1.25, nose: 1.6 },
   },
+  // Beyond sports cars. `class` names a profile in vehicles.js, which sets
+  // the physics, drivetrain, powertrain, camera and engine note; these
+  // entries only add the look. Dimensions are the real thing's.
+  ion: {
+    name: 'Ion GT', category: 'Electric grand tourer', class: 'ev',
+    shape: 'ev', scheme: 'plain', engine: 'electric', color: 0xe6eaf0,
+    blurb: 'Two motors, one gear, every newton from a standstill. Silent, heavy, and brutal out of a hairpin.',
+    drive: { power: 1, mass: 1, grip: 1, steer: 1, brake: 1.05 },
+    body: { width: 1.96, length: 4.9, roof: 0.46, ride: 0.5, wing: 0.3, nose: 1.2 },
+  },
+  ridge: {
+    name: 'Ridgeback', category: 'Performance SUV', class: 'suv',
+    engine: 'v8', color: 0x2f3c33,
+    blurb: 'Two tonnes, all-wheel drive, a high seat and a big V8. Leans, pushes, and still gets there.',
+    drive: { power: 1, mass: 1, grip: 1, steer: 1, brake: 1 },
+    body: { width: 1.98, length: 4.8, roof: 1.25, ride: 0.45, wing: 0, nose: 1 },
+  },
+  courier: {
+    name: 'Courier', category: 'Panel van', class: 'van',
+    engine: 'diesel', color: 0xeeeeea,
+    blurb: 'Front-wheel drive, a tall box and a diesel. Every corner is a negotiation with its centre of gravity.',
+    drive: { power: 1, mass: 1, grip: 1, steer: 1, brake: 1 },
+    body: { width: 2.02, length: 5.3, roof: 1.7, ride: 0.65, wing: 0, nose: 0.6 },
+  },
+  metro: {
+    name: 'Metro 12', category: 'City bus', class: 'bus',
+    engine: 'diesel', color: 0xc9362b,
+    blurb: 'Twelve metres, twelve tonnes, a governor at 97 km/h. Brake early, turn wide, and own the road.',
+    drive: { power: 1, mass: 1, grip: 1, steer: 1, brake: 1 },
+    body: { width: 2.55, length: 12, roof: 2.3, ride: 0.5, wing: 0, nose: 0.2 },
+  },
+  hauler: {
+    name: 'Hauler', category: 'Tractor unit', class: 'truck',
+    engine: 'diesel', color: 0x1f5fa8,
+    blurb: 'Three axles and a cab you climb into. Enormous torque, enormous weight, and it stops when it is ready.',
+    drive: { power: 1, mass: 1, grip: 1, steer: 1, brake: 1 },
+    body: { width: 2.5, length: 6.9, roof: 2.3, ride: 0.7, wing: 0, nose: 0.4 },
+  },
+  pista: {
+    name: 'Pista 125', category: 'Racing kart', class: 'kart',
+    engine: 'kart', color: 0xff6a00, rider: 0x223a5e,
+    blurb: 'A frame, four tyres and a 125 behind your back, four centimetres off the ground. Turns the instant you think it.',
+    drive: { power: 1, mass: 1, grip: 1, steer: 1, brake: 1 },
+    body: { width: 1.36, length: 1.85, roof: 0.35, ride: 0.2, wing: 0, nose: 0.3 },
+  },
+  strada: {
+    name: 'Strada 1000', category: 'Superbike', class: 'moto',
+    engine: 'moto', color: 0xc8102e, rider: 0x1c2233,
+    blurb: 'Two wheels and 150 kW. Lean it in before you ask it to turn; the front lifts under power and the rear under braking.',
+    drive: { power: 1, mass: 1, grip: 1, steer: 1, brake: 1 },
+    body: { width: 0.78, length: 2.08, roof: 0.55, ride: 0.5, wing: 0, nose: 0.3 },
+  },
 };
 
 // Circuits. Control points are raw (x, z) metres; the rest changes how the

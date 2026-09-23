@@ -9,6 +9,10 @@ import {
 import { renderChassisThumbs } from './car-thumbs.js';
 import { makeCode, normaliseCode, DEFAULT_ROOM } from './room-code.js';
 import { Boot } from './boot.js';
+import {
+  PRESETS, paramsFor, simpleFor, fromSimple, presetSetup, clampSetup, defaultSetup, classOf,
+} from './vehicles.js';
+import { measure } from './measure.js';
 
 const $ = (id) => document.getElementById(id);
 const menu = $('menu');
@@ -139,6 +143,7 @@ function setView(next) {
     el.hidden = el.dataset.view !== next;
   }
   if (next === 'career') renderCareer();
+  if (next === 'garage') renderTune();
   // The garage is the studio; everywhere else stands the car on the circuit
   // under the conditions that are selected, so a change to the weather or the
   // time of day is something the player watches happen.
@@ -154,16 +159,6 @@ function renderSpec() {
   if (view === 'race') return renderRaceSpec();
   return renderCarSpec();
 }
-
-// Bars as a share of the best car in the game at that one thing, so a full bar
-// means "nothing here does this better".
-const BEST = Object.values(CHASSIS).reduce((acc, c) => ({
-  speed: Math.max(acc.speed, c.drive.power / c.drive.mass),
-  accel: Math.max(acc.accel, (c.drive.power * c.drive.grip) / c.drive.mass),
-  grip: Math.max(acc.grip, c.drive.grip),
-  steer: Math.max(acc.steer, c.drive.steer),
-  brake: Math.max(acc.brake, c.drive.brake),
-}), { speed: 0, accel: 0, grip: 0, steer: 0, brake: 0 });
 
 function paintSpec({ name, tag, bars, blurb }) {
   $('spec-name').textContent = name;
@@ -185,22 +180,174 @@ function paintSpec({ name, tag, bars, blurb }) {
   }));
 }
 
+// The garage shows what the vehicle does, measured: the real physics driven
+// through a standing start, a stop and a skidpad with the current setup.
+// Measured once per setup and kept.
+const figures = new Map();
+function measured(key) {
+  const setup = game.setupFor(key);
+  const id = `${key}:${JSON.stringify(setup)}`;
+  if (!figures.has(id)) figures.set(id, measure(key, CHASSIS[key], setup));
+  return figures.get(id);
+}
+
+// Understeer gradient in degrees per g: positive pushes, negative rotates.
+const balanceText = (k) => (Math.abs(k) < 0.15 ? 'Neutral'
+  : k > 0 ? `Understeer ${k.toFixed(1)}°/g` : `Oversteer ${(-k).toFixed(1)}°/g`);
+
+let specPending = null;
 function renderCarSpec() {
-  const chassis = CHASSIS[choice.chassis];
-  const d = chassis.drive;
-  paintSpec({
+  const key = choice.chassis;
+  const chassis = CHASSIS[key];
+  const cls = classOf(chassis);
+  const tag = `${chassis.category} · ${cls.drivetrain} · ${cls.powertrain}`;
+  const show = (m) => paintSpec({
     name: chassis.name,
-    tag: chassis.category,
+    tag,
     blurb: chassis.blurb,
-    bars: [
-      ['Top speed', (d.power / d.mass) / BEST.speed],
-      ['Accel', ((d.power * d.grip) / d.mass) / BEST.accel],
-      ['Handling', d.grip / BEST.grip],
-      ['Drift', d.steer / BEST.steer],
-      ['Braking', d.brake / BEST.brake],
-    ],
+    bars: m ? [
+      ['PI', null, `${m.letter} ${m.pi}`],
+      ['0–100 km/h', null, m.t100 ? `${m.t100.toFixed(1)} s` : '—'],
+      ['100–200', null, m.t100 && m.t200 ? `${(m.t200 - m.t100).toFixed(1)} s` : '—'],
+      ['Top speed', null, `${Math.round(m.top)} km/h`],
+      ['100–0 km/h', null, `${m.stop.toFixed(1)} m`],
+      ['Cornering', null, `${m.g.toFixed(2)} g`],
+      ['Wet', null, `${m.wetG.toFixed(2)} g`],
+      // A bike's corner is limited by how far it leans, not by which end
+      // lets go first.
+      cls.caps.lean
+        ? ['Max lean', null, `${Math.round((cls.physics.maxLean ?? 0) * 57.3)}°`]
+        : ['Balance', null, balanceText(m.balance)],
+    ] : [['Measuring', null, '…']],
+  });
+  // A few frames for the click to land before the physics runs.
+  clearTimeout(specPending);
+  specPending = setTimeout(() => {
+    if (view === 'garage' && choice.chassis === key) show(measured(key));
+  }, 60);
+  show(null);
+}
+
+// --- setup -----------------------------------------------------------------
+function tuneRecord(key) {
+  const saved = game.setupRecord(key);
+  if (saved?.values) return saved;
+  return { mode: 'simple', simple: {}, preset: 'balanced', values: defaultSetup(CHASSIS[key]) };
+}
+
+const fmt = (p, v) => (p.step < 1 ? Number(v).toFixed(p.step < 0.1 ? 2 : 1) : Math.round(v))
+  + (p.unit === '×' ? '×' : ` ${p.unit}`);
+
+function commitTune(key, record) {
+  game.saveSetup(key, record);
+  renderCarSpec();
+}
+
+function renderTune() {
+  const key = choice.chassis;
+  const chassis = CHASSIS[key];
+  const record = tuneRecord(key);
+  for (const b of $('tune-mode').children) {
+    b.setAttribute('aria-pressed', String(b.dataset.mode === record.mode));
+  }
+  $('tune-presets').replaceChildren(...Object.entries(PRESETS).map(([pk, preset]) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = preset.name;
+    b.setAttribute('aria-pressed', String(record.preset === pk));
+    b.addEventListener('click', () => {
+      commitTune(key, {
+        mode: record.mode, preset: pk, simple: { ...preset.simple }, values: presetSetup(chassis, pk),
+      });
+      renderTune();
+    });
+    return b;
+  }));
+
+  const rows = [];
+  const row = (label, readout, input, ends) => {
+    const el = document.createElement('div');
+    el.className = 'tune-row';
+    const name = document.createElement('span');
+    name.textContent = label;
+    const value = document.createElement('b');
+    value.textContent = readout;
+    el.append(name, value, input);
+    if (ends) {
+      const e = document.createElement('div');
+      e.className = 'tune-ends';
+      e.innerHTML = `<i>${ends[0]}</i><i>${ends[1]}</i>`;
+      el.append(e);
+    }
+    rows.push(el);
+    return value;
+  };
+  const range = (min, max, step, value, label) => {
+    const input = document.createElement('input');
+    Object.assign(input, { type: 'range', min, max, step, value });
+    input.setAttribute('aria-label', label);
+    requestAnimationFrame(() => paintRange(input));
+    return input;
+  };
+
+  if (record.mode === 'simple') {
+    const simple = record.simple ?? {};
+    for (const s of simpleFor(chassis)) {
+      const input = range(-100, 100, 1, Math.round((simple[s.key] ?? 0) * 100), s.label);
+      const readout = row(s.label, record.simple ? '' : 'custom', input, s.ends);
+      input.addEventListener('input', () => {
+        paintRange(input);
+        const next = { ...(record.simple ?? {}), [s.key]: Number(input.value) / 100 };
+        record.simple = next;
+        record.preset = null;
+        record.values = clampSetup(chassis, fromSimple(chassis, next));
+        readout.textContent = '';
+        commitTune(key, record);
+        for (const b of $('tune-presets').children) b.setAttribute('aria-pressed', 'false');
+      });
+    }
+  } else {
+    let group = null;
+    for (const p of paramsFor(chassis)) {
+      if (p.group !== group) {
+        group = p.group;
+        const g = document.createElement('div');
+        g.className = 'tune-group';
+        g.textContent = group;
+        rows.push(g);
+      }
+      const input = range(p.min, p.max, p.step, record.values[p.key], p.label);
+      const readout = row(p.label, fmt(p, record.values[p.key]), input);
+      input.addEventListener('input', () => {
+        paintRange(input);
+        record.values = clampSetup(chassis, { ...record.values, [p.key]: Number(input.value) });
+        record.preset = null;
+        record.simple = null;       // hand-tuned: simple mode no longer describes it
+        readout.textContent = fmt(p, record.values[p.key]);
+        commitTune(key, record);
+        for (const b of $('tune-presets').children) b.setAttribute('aria-pressed', 'false');
+      });
+    }
+  }
+  $('tune-controls').replaceChildren(...rows);
+}
+
+for (const b of $('tune-mode').children) {
+  b.addEventListener('click', () => {
+    const key = choice.chassis;
+    const record = tuneRecord(key);
+    record.mode = b.dataset.mode;
+    game.saveSetup(key, record);
+    renderTune();
   });
 }
+$('tune-reset').addEventListener('click', () => {
+  const key = choice.chassis;
+  commitTune(key, {
+    mode: tuneRecord(key).mode, preset: 'balanced', simple: {}, values: defaultSetup(CHASSIS[key]),
+  });
+  renderTune();
+});
 
 // Length and corner count are measured from the built circuit, not written
 // down beside it, so they cannot drift out of step with the track itself.
@@ -290,7 +437,10 @@ const describe = (_, value) => {
 const describeCar = (key, value) => describe(key, value);
 function buildPickers() {
   segment('pick-mode', MODES, 'mode', (k) => MODE_ICONS[k], describe);
-  segment('pick-chassis', CHASSIS, 'chassis', (k, v) => carCard(k, v), describeCar);
+  segment('pick-chassis', CHASSIS, 'chassis', (k, v) => carCard(k, v), (k, v) => {
+    describeCar(k, v);
+    renderTune();
+  });
   segment('pick-track', TRACKS, 'track', (_, v) => circuitIcon(v), describe);
   segment('pick-vision', VISIONS, 'vision', (_, v) => visionSwatch(v), describe);
   segment('pick-weather', WEATHERS, 'weather', (_, v) => weatherSwatch(v), describe);
@@ -599,7 +749,9 @@ const settings = {
   music: level('music', Number(localStorage.getItem('apex.music') ?? 1)),
   sfx: level('sfx', Number(localStorage.getItem('apex.sfx') ?? 1)),
   ui: level('ui'),
-  quality: localStorage.getItem('apex.quality') ?? 'medium',
+  // Auto for anyone who never chose; an old low/medium/high choice still holds.
+  quality: localStorage.getItem('apex.quality') ?? 'auto',
+  grading: localStorage.getItem('apex.grading') !== 'off',
   shadows: localStorage.getItem('apex.shadows') !== 'off',
   camera: localStorage.getItem('apex.camera') ?? 'chase',
   touchControls: localStorage.getItem('apex.touch') ?? 'auto',
@@ -657,6 +809,7 @@ $('set-sound').checked = settings.sound;
 for (const [id, key] of MIX) $(id).value = String(Math.round(settings[key] * 100));
 $('set-quality').value = settings.quality;
 $('set-shadows').checked = settings.shadows;
+$('set-grading').checked = settings.grading;
 $('set-camera').value = settings.camera;
 $('set-touch').value = settings.touchControls;
 $('set-steering').value = String(Math.round(settings.steering * 100));
@@ -675,6 +828,7 @@ for (const [id, key] of MIX) {
 }
 bind('set-quality', 'quality', (el) => el.value);
 bind('set-shadows', 'shadows', (el) => el.checked, (v) => (v ? 'on' : 'off'));
+bind('set-grading', 'grading', (el) => el.checked, (v) => (v ? 'on' : 'off'));
 bind('set-camera', 'camera', (el) => el.value);
 bind('set-touch', 'touchControls', (el) => el.value);
 bind('set-steering', 'steering', (el) => Number(el.value) / 100);

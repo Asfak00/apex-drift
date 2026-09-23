@@ -94,6 +94,13 @@ const SKY_FRAG = `
       col = mix(col, mix(shade, lit, clamp(deck * 1.2 - 0.15, 0.0, 1.0)), cover);
     }
 
+    #ifdef DISPLAY_SKY
+      // The colours above are authored as they should look on screen. The
+      // scene is tone mapped as one image after it is drawn, so the visible
+      // dome hands the pipeline linear light, trimmed so the tone curve gives
+      // back roughly the sky that was authored.
+      col = pow(max(col, 0.0), vec3(2.2)) * 0.82;
+    #endif
     gl_FragColor = vec4(col, 1.0);
   }`;
 
@@ -123,8 +130,10 @@ class Precipitation {
       const pos = new Float32Array(count * 6);
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      // Drops are see-through streaks, not surfaces: they must not write
+      // depth, or the screen-space passes would treat them as geometry.
       this.object = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
-        color: 0xaec8e8, transparent: true, opacity: 0.42,
+        color: 0xaec8e8, transparent: true, opacity: 0.42, depthWrite: false,
       }));
       this.fallSpeed = 58;
       this.streak = 1.7;
@@ -199,6 +208,9 @@ export class Environment {
     this.renderer = renderer;
     this.track = track;
 
+    // Two materials over one set of uniforms: the probe keeps the values it has
+    // always lit the paint with, and the visible dome is converted for the
+    // tone-mapped pipeline. A change to either sky changes both.
     this.skyMat = new THREE.ShaderMaterial({
       vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.BackSide, depthWrite: false,
       uniforms: {
@@ -212,16 +224,19 @@ export class Environment {
         uTime: { value: 0 },
       },
     });
-    this.sky = new THREE.Mesh(new THREE.SphereGeometry(1400, 24, 16), this.skyMat);
+    this.domeMat = new THREE.ShaderMaterial({
+      vertexShader: SKY_VERT, fragmentShader: SKY_FRAG, side: THREE.BackSide, depthWrite: false,
+      uniforms: this.skyMat.uniforms, defines: { DISPLAY_SKY: '' },
+    });
+    this.sky = new THREE.Mesh(new THREE.SphereGeometry(1400, 24, 16), this.domeMat);
     this.sky.frustumCulled = false;
     scene.add(this.sky);
 
     this.sun = new THREE.DirectionalLight(0xffffff, 2.4);
     this.sun.castShadow = true;
     // A tight, high-resolution shadow frustum around the action is what makes
-    // the cars sit on the road instead of hovering over it.
-    this.sun.shadow.mapSize.setScalar(
-      matchMedia('(pointer: coarse)').matches ? 1024 : 2048);
+    // the cars sit on the road instead of hovering over it. The map size is
+    // the render pipeline's to set: it is part of the quality tier.
     this.sun.shadow.camera.near = 20;
     this.sun.shadow.camera.far = 520;
     this.sun.shadow.bias = -0.0006;
@@ -260,6 +275,14 @@ export class Environment {
   }
 
   get vision() { return VISIONS[this.visionKey]; }
+
+  // How much light falls on things that do not take part in lighting:
+  // particles, spray, rain. Full in daylight, a fraction at night.
+  get lightLevel() {
+    const v = this.vision, w = this.weather;
+    const lit = 0.2 + this.hemi.intensity * 0.4 + v.sunI * w.lightScale * 0.25;
+    return Math.min(1, Math.max(0.15, lit));
+  }
   get weather() { return WEATHERS[this.weatherKey]; }
   get grip() { return this.weather.grip; }
 
@@ -301,23 +324,12 @@ export class Environment {
     this.scene.fog.far = v.fogFar * w.fogScale;
     this.renderer.toneMappingExposure = v.exposure;
 
-    // Wet surfaces go darker and glossier; snow lightens the verges. Each
-    // circuit keeps its own base colours and the vision only tints them, so a
-    // dirt road still reads as dirt at night.
+    // Snow lightens the verges. Each circuit keeps its own base colours and
+    // the vision only tints them, so a dirt road still reads as dirt at night.
     const base = this.track.baseColors;
-    const dirt = this.track.spec.surface === 'dirt';
-    const road = this.track.roadMaterial;
-    road.roughness = (dirt ? 1 : 0.92) - w.wet * (dirt ? 0.35 : 0.62);
-    road.metalness = (dirt ? 0 : 0.02) + w.wet * (dirt ? 0.18 : 0.42);
-    road.color.setHex(base.road).multiplyScalar(1 - w.wet * 0.3);
-    // A dry road takes almost nothing from the sky; a wet one is a mirror of
-    // it. This is what makes rain read as water rather than as a dark tint.
-    road.envMapIntensity = 0.25 + w.wet * 1.5;
-    // Standing water fills the texture of the surface, so the aggregate stops
-    // showing through as the road gets wetter. Without this the reflection
-    // breaks up into sparkle on every chipping.
-    road.normalScale?.setScalar((dirt ? 1.1 : 0.7) * (1 - w.wet * 0.78));
-    if (this.track.edgeMaterial) this.track.edgeMaterial.roughness = 0.72 - w.wet * 0.45;
+    // The road's water is the track condition's, not the weather's: it lags
+    // the sky, so a shower wets the road over a minute and it dries slowly.
+    this.setWetness(this.roadWet ?? w.wet, this.roadStanding ?? 0);
 
     const snowy = weatherKey === 'snow';
     const tint = new THREE.Color(v.groundTint);
@@ -350,8 +362,33 @@ export class Environment {
     }
 
     this.precip.build(w.particle, Math.round(w.count * this.quality));
+    // Falling rain and snow are unlit geometry; they carry the scene's light
+    // level so they do not glow against a dark night sky.
+    this.precip.object?.material.color.multiplyScalar(this.lightLevel);
     this.lightsOn = v.lights || w.fogScale < 0.45;
     this.#refreshProbe();
+  }
+
+  // Wet surfaces go darker and glossier. `wet` is how much water the surface
+  // holds and `standing` how much of it lies in sheets on top.
+  setWetness(wet, standing = 0) {
+    this.roadWet = wet;
+    this.roadStanding = standing;
+    const w = Math.min(1, wet * 0.9 + standing * 0.25);
+    const base = this.track.baseColors;
+    const dirt = this.track.spec.surface === 'dirt';
+    const road = this.track.roadMaterial;
+    road.roughness = (dirt ? 1 : 0.92) - w * (dirt ? 0.35 : 0.62);
+    road.metalness = (dirt ? 0 : 0.02) + w * (dirt ? 0.18 : 0.42);
+    road.color.setHex(base.road).multiplyScalar(1 - w * 0.3);
+    // A dry road takes almost nothing from the sky; a wet one is a mirror of
+    // it. This is what makes rain read as water rather than as a dark tint.
+    road.envMapIntensity = 0.25 + w * 1.5;
+    // Standing water fills the texture of the surface, so the aggregate stops
+    // showing through as the road gets wetter. Without this the reflection
+    // breaks up into sparkle on every chipping.
+    road.normalScale?.setScalar((dirt ? 1.1 : 0.7) * (1 - w * 0.78));
+    if (this.track.edgeMaterial) this.track.edgeMaterial.roughness = 0.72 - w * 0.45;
   }
 
   // Rebuilt only when the sky itself changes, never per frame.
@@ -364,13 +401,32 @@ export class Environment {
     this.scene.environmentIntensity = Math.max(0.42, 0.55 + this.weather.lightScale * 0.45);
   }
 
+  // The shadow frustum follows the camera, but only in whole shadow-map texels
+  // across the light's view. Sliding it continuously re-samples every edge at
+  // a new sub-texel offset each frame, which is what makes shadow edges crawl
+  // at speed; snapped, a still shadow stays still while the car drives by.
+  #followShadow(at) {
+    const dir = this.sunDir ??= new THREE.Vector3();
+    dir.set(...this.vision.sun).normalize();
+    this.lightBasis ??= new THREE.Matrix4();
+    this.lightInverse ??= new THREE.Matrix4();
+    this.snapV ??= new THREE.Vector3();
+    this.lightBasis.lookAt(dir, new THREE.Vector3(0, 0, 0), THREE.Object3D.DEFAULT_UP);
+    this.lightInverse.copy(this.lightBasis).invert();
+    const c = this.sun.shadow.camera;
+    const texel = (c.right - c.left) / this.sun.shadow.mapSize.x;
+    const p = this.snapV.copy(at).applyMatrix4(this.lightInverse);
+    p.x = Math.round(p.x / texel) * texel;
+    p.y = Math.round(p.y / texel) * texel;
+    p.applyMatrix4(this.lightBasis);
+    this.sun.target.position.copy(p);
+    this.sun.position.copy(p).addScaledVector(dir, 300);
+  }
+
   update(dt, camera, clock) {
     this.skyMat.uniforms.uTime.value += dt;
     this.sky.position.copy(camera.position);
-    this.sun.target.position.copy(camera.position);
-    this.sun.position.copy(camera.position).add(
-      new THREE.Vector3(...this.vision.sun).multiplyScalar(300),
-    );
+    this.#followShadow(camera.position);
     this.precip.update(dt, camera, this.weather.wind);
 
     if (this.weather.lightning) {

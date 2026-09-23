@@ -71,6 +71,18 @@ export const ENGINES = {
   flat6: { types: ['sawtooth', 'triangle'], detune: 9, base: 55, span: 132, cut: 540, q: 3.6, grit: 0.07 },
   turbo4: { types: ['square', 'square'], detune: 22, base: 68, span: 168, cut: 760, q: 2.8, grit: 0.15 },
   hybrid: { types: ['triangle', 'sawtooth'], detune: 3, base: 96, span: 220, cut: 1500, q: 2.0, grit: 0.03 },
+  // A big diesel: low, lumpy, and it never revs far.
+  diesel: { types: ['square', 'square'], detune: 28, base: 26, span: 52, cut: 260, q: 6.2, grit: 0.22 },
+  // An inline four in a superbike: high, hard, and it lives at the top.
+  moto: { types: ['sawtooth', 'square'], detune: 11, base: 88, span: 330, cut: 900, q: 3.2, grit: 0.1 },
+  // A two-stroke: a buzz with a rasp in it.
+  kart: { types: ['square', 'sawtooth'], detune: 34, base: 120, span: 300, cut: 1300, q: 2.4, grit: 0.26 },
+  // An electric motor: a clean whine rising with road speed and an inverter
+  // tone above it. No gears to shift, nothing to pop on the overrun.
+  electric: {
+    types: ['sine', 'triangle'], detune: 1200, base: 160, span: 940, cut: 3200, q: 1.2, grit: 0,
+    electric: true,
+  },
 };
 
 // One fader per family of sound, with the level it sits at when the driver
@@ -351,13 +363,15 @@ export class Audio {
   // Everything the tyres are doing this frame. `surface` changes what rolling
   // sounds like, `wet` puts water under it, `off` is a wheel on the verge.
   tyres({ kmh: rawKmh = 0, slide: rawSlide = 0, lockup: rawLock = 0,
-    off = false, wet: rawWet = 0, surface = 'asphalt' } = {}) {
+    off = false, wet: rawWet = 0, surface = 'asphalt', heat: rawHeat = 0 } = {}) {
     if (!this.started || !this.rollGain) return;
     const t = this.ctx.currentTime;
     const kmh = Math.max(0, safe(rawKmh));
     const slide = Math.max(0, safe(rawSlide));
     const lockup = Math.max(0, Math.min(1, safe(rawLock)));
     const wet = Math.max(0, Math.min(1, safe(rawWet)));
+    // An overheated tread is greasy: it lets go sooner and louder.
+    const heat = Math.max(0, Math.min(1, safe(rawHeat)));
     const speed = Math.min(1, kmh / 240);
 
     // Rolling: quiet and dull on asphalt, loud and broadband on gravel.
@@ -369,9 +383,10 @@ export class Audio {
 
     // Squeal: how far past the limit, and pitched by how fast it is scrubbing.
     // Water takes the squeal away and leaves the hiss behind.
-    const scrub = Math.max(Math.min(1, (slide - 1.4) / 7), lockup * 0.8);
-    const voice = Math.max(0, scrub) * (1 - wet * 0.6) * (off ? 0.25 : 1);
-    const pitch = 360 + Math.min(1, slide / 9) * 520 + speed * 180;
+    const scrub = Math.max(Math.min(1, (slide - 1.4 + heat * 0.8) / 7), lockup * 0.8);
+    const voice = Math.min(1, Math.max(0, scrub) * (1 + heat * 0.5))
+      * (1 - wet * 0.6) * (off ? 0.25 : 1);
+    const pitch = 360 + Math.min(1, slide / 9) * 520 + speed * 180 + heat * 120;
     for (const o of this.squealOsc) o.frequency.setTargetAtTime(pitch, t, 0.08);
     this.squealBand.frequency.setTargetAtTime(pitch * 2.2, t, 0.09);
     this.squealGain.gain.setTargetAtTime(voice * 0.26, t, 0.07);
@@ -450,13 +465,14 @@ export class Audio {
     this.engineTopGain.gain.setTargetAtTime(top * top * 0.075 * drive, t, 0.06);
 
     // A shift is a change of gear, so the sound of one belongs here rather
-    // than in whatever part of the game happens to notice.
-    if (this.lastGear !== undefined && gear !== this.lastGear && rpm > 0.1) {
+    // than in whatever part of the game happens to notice. An electric drive
+    // has neither shifts nor overrun.
+    if (!e.electric && this.lastGear !== undefined && gear !== this.lastGear && rpm > 0.1) {
       if (gear > this.lastGear) this.shift(); else this.blip();
     }
     this.lastGear = gear;
     // Lifting off at high revs pops once, not every frame.
-    if (this.lastLoad > 0.5 && load < 0.15 && rpm > 0.55) this.overrun();
+    if (!e.electric && this.lastLoad > 0.5 && load < 0.15 && rpm > 0.55) this.overrun();
     this.lastLoad = load;
 
     // Wind rises with speed; a sliding tyre adds a hiss on top of it.

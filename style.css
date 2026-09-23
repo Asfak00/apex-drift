@@ -26,91 +26,149 @@ html,body{margin:0;height:100%;background:var(--carbon);color:var(--ink);
 #scene{position:absolute;inset:0;width:100%;height:100%;display:block}
 .mono{font-family:var(--font);font-variant-numeric:tabular-nums}
 
-/* ---------- HUD ---------- */
+/* ---------- HUD ----------
+   Two columns of glass cards, one per side of the screen, with a fixed gap
+   between every card. Each column is scaled as one piece (see Hud#fit) when
+   the window is short or narrow, so cards shrink together instead of
+   sliding over each other. The middle of the screen, where the car is, is
+   never covered. */
 #hud{position:absolute;inset:0;pointer-events:none;
-  padding:calc(18px + env(safe-area-inset-top,0px)) 18px calc(18px + env(safe-area-inset-bottom,0px))}
-.hud-corner{position:absolute;display:flex;flex-direction:column;gap:10px}
-.tl{top:18px;left:18px}
-.tl-low{top:196px;left:18px}
-.gaps{min-width:182px}
-.gaps .v.sm{font-size:12px;font-weight:600}
-.gaps .v.close{color:var(--warn)}
-.tr{top:18px;right:18px;align-items:flex-end}
-.br{bottom:18px;right:18px}
-.panel{background:var(--panel);background-image:var(--carbon-weave);
-  border:1px solid var(--edge);border-radius:11px;
-  padding:10px 14px;backdrop-filter:blur(14px);min-width:150px;
-  box-shadow:0 14px 30px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.04)}
-/* A thin crimson rule down the left of every readout: the one piece of livery
-   that ties the HUD together without colouring the data itself. */
-.panel{border-left:2px solid var(--edge-hot)}
-.row{display:flex;justify-content:space-between;align-items:baseline;gap:18px;line-height:1.75}
-.k{font-size:10px;letter-spacing:.14em;color:var(--dim)}
-.v{font-size:15px;font-weight:600}
-.v.dim{color:var(--dim)} .v.accent{color:var(--good)}
-.k{text-transform:uppercase}
-.times .v{font-size:14px}
-#minimap{background:var(--panel);border:1px solid var(--edge);border-radius:11px;
-  border-left:2px solid var(--edge-hot);
-  backdrop-filter:blur(14px);width:170px;height:170px;
-  box-shadow:0 14px 30px rgba(0,0,0,.45)}
-.env{min-width:170px}
+  --hud-scale:1;--gap:12px;--pad-x:18px;
+  --pad-t:calc(18px + env(safe-area-inset-top,0px));
+  --pad-b:calc(18px + env(safe-area-inset-bottom,0px));
+  --glass:linear-gradient(180deg,rgba(22,24,30,.5),rgba(8,9,12,.34));
+  --glass-edge:rgba(255,255,255,.09)}
+.hud-col{position:absolute;top:var(--pad-t);bottom:var(--pad-b);display:flex;
+  flex-direction:column;gap:var(--gap)}
+.hud-col.left{left:var(--pad-x);width:214px;
+  transform:scale(var(--hud-scale));transform-origin:top left}
+.hud-col.right{right:var(--pad-x);width:0}
+/* Each stack is pinned to its own corner and scaled from it, so however tall
+   they are, they grow away from the edge and toward each other, never off
+   the screen. Hud#fit keeps them from meeting. */
+.hud-stack{position:absolute;right:0;display:flex;flex-direction:column;align-items:flex-end;
+  gap:var(--gap)}
+.hud-stack.top{top:0;transform:scale(var(--hud-scale));transform-origin:top right}
+.hud-stack.bottom{bottom:0;transform:scale(var(--hud-scale));transform-origin:bottom right}
 
-/* ---------- gauge ---------- */
- /* The dial needs its own ground, or the scene shows through the face. */
-.gauge{position:relative;width:262px;padding:12px 14px 10px;border-radius:16px;
-  background:var(--panel);background-image:var(--carbon-weave);
-  border:1px solid var(--edge);backdrop-filter:blur(14px);
-  box-shadow:0 18px 40px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.05)}
-/* The one red line on the dial face: a rev limiter bar the eye can find. */
-.gauge::after{content:'';position:absolute;left:14px;right:14px;top:0;height:2px;
-  background:linear-gradient(90deg,transparent,var(--accent),transparent);opacity:.7}
-#gauge-svg{width:100%;height:auto;display:block;overflow:visible}
-.gauge-track{fill:none;stroke:rgba(125,139,163,.22);stroke-width:11;stroke-linecap:round}
-.gauge-fill{fill:none;stroke:var(--accent);stroke-width:11;stroke-linecap:round;
-  filter:drop-shadow(0 0 6px rgba(224,27,36,.55));transition:stroke .25s linear}
-/* The rotation centre comes from the SVG transform attribute the HUD writes,
-   so no CSS transform-box may override it. */
-.gauge-needle{stroke:var(--ink);stroke-width:3;stroke-linecap:round;
-  filter:drop-shadow(0 0 4px rgba(0,0,0,.8))}
-.gauge-hub{fill:var(--accent)}
-.tick{stroke:rgba(125,139,163,.55);stroke-width:2}
-.tick.major{stroke:rgba(200,220,245,.8);stroke-width:2.5}
-.tick-label{fill:var(--dim);font-size:12px;font-family:var(--font);text-anchor:middle;
-  dominant-baseline:middle}
-/* The readout sits under the dial: nothing can ever overlap the needle sweep. */
-.readout{display:flex;align-items:baseline;justify-content:center;gap:8px;
-  margin-top:-14px;pointer-events:none}
-.speed{font-family:var(--display);font-size:52px;font-weight:700;
-  letter-spacing:.01em;line-height:1}
-.unit{font-size:9px;letter-spacing:.22em;color:var(--dim)}
-.gear-badge{margin-left:6px;font-size:20px;font-weight:700;color:var(--ink);
-  background:var(--panel);border:1px solid var(--edge);border-radius:9px;
-  padding:2px 10px;backdrop-filter:blur(10px)}
+.card{position:relative;background:var(--glass);border:1px solid var(--glass-edge);
+  border-radius:14px;padding:10px 14px;backdrop-filter:blur(12px) saturate(1.2);
+  -webkit-backdrop-filter:blur(12px) saturate(1.2);
+  box-shadow:0 10px 26px rgba(0,0,0,.34),inset 0 1px 0 rgba(255,255,255,.06),
+    inset 2px 0 0 rgba(224,27,36,.62)}
+.hud-col.left .card{width:100%}
+.row{display:flex;justify-content:space-between;align-items:baseline;gap:14px;line-height:1.7}
+.k{font-size:9.5px;letter-spacing:.16em;color:var(--dim);text-transform:uppercase;font-weight:600}
+.v{font-size:14px;font-weight:600;white-space:nowrap}
+.v.dim{color:var(--dim)} .v.accent{color:var(--good)}
+.v.sm{font-size:12px}
+
+/* Position and lap */
+.race{display:flex;align-items:center;gap:16px;padding:10px 14px 12px}
+.race-pos{display:flex;flex-direction:column;gap:2px}
+.pos-big{display:flex;align-items:baseline}
+.pos-big b{font-family:var(--display);font-size:46px;font-weight:800;line-height:.86;
+  letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.pos-big small{font-size:15px;font-weight:700;color:var(--dim);margin-left:2px}
+.race-lap{flex:1;display:flex;flex-direction:column;gap:4px;min-width:0}
+.race-lap b{font-size:20px;font-weight:700;line-height:1}
+.lap-bar{display:block;height:4px;border-radius:99px;background:rgba(255,255,255,.1);overflow:hidden}
+.lap-bar i{display:block;height:100%;width:0;border-radius:99px;
+  background:linear-gradient(90deg,var(--accent),#ff7a7e)}
+
+/* Lap times, and the live gap to the best lap */
+.time-now{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding-bottom:4px;margin-bottom:2px;border-bottom:1px solid rgba(255,255,255,.06)}
+.time-now #time{font-size:23px;font-weight:700;letter-spacing:-.01em}
+.delta{font-size:12px;font-weight:800;padding:2px 7px;border-radius:7px;min-width:52px;text-align:center}
+.delta:empty{display:none}
+.delta.gain{color:#06130d;background:var(--good)}
+.delta.loss{color:#fff;background:rgba(255,58,63,.88)}
+
+/* Gaps */
+.gap-row{display:flex;justify-content:space-between;align-items:baseline;gap:10px;line-height:1.75}
+.gaps .v.close{color:var(--warn)}
+
+/* Where: minimap and conditions */
+#minimap{width:180px;height:180px;border-radius:14px;background:var(--glass);
+  border:1px solid var(--glass-edge);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  box-shadow:0 10px 26px rgba(0,0,0,.34),inset 2px 0 0 rgba(224,27,36,.62)}
+.env{width:180px}
+.env .road-state{font-size:12px}
+.grip-row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;padding-top:3px}
+.grip-bar{height:4px;border-radius:99px;background:rgba(255,255,255,.1);overflow:hidden}
+.grip-bar i{display:block;height:100%;width:100%;border-radius:99px;background:var(--good);
+  transition:width .3s,background .3s}
+
+/* ---------- the instrument ----------
+   A dial that lets the world show through: a smoky glass disc with a soft
+   blur behind it, bright markings on top, a glowing needle. It is sized to
+   the vehicle: a bus reads to 120, a hypercar to 360. */
+.dash{position:relative;width:clamp(250px,23vw,330px);display:flex;flex-direction:column;
+  align-items:center;gap:6px}
+.dash::before{content:'';position:absolute;left:2.5%;top:0;width:95%;aspect-ratio:1;
+  border-radius:50%;backdrop-filter:blur(7px) saturate(1.15);-webkit-backdrop-filter:blur(7px) saturate(1.15);
+  pointer-events:none}
+.dial{position:relative;width:100%;height:auto;display:block;overflow:visible;
+  filter:drop-shadow(0 14px 30px rgba(0,0,0,.4))}
+.dial-rim{fill:none;stroke:rgba(255,255,255,.16);stroke-width:1.5}
+.rev-track{fill:none;stroke:rgba(255,255,255,.08);stroke-width:7}
+.rev-red{fill:none;stroke:rgba(255,58,63,.55);stroke-width:7}
+.rev-fill{fill:none;stroke:url(#rev-grad);stroke-width:7;
+  filter:drop-shadow(0 0 5px rgba(255,150,90,.45))}
+.tick{stroke:rgba(236,240,247,.42);stroke-width:1.4}
+.tick.major{stroke:#f4f6fa;stroke-width:3}
+.tick-num{fill:#eef2f7;font-family:var(--display);font-size:17px;font-weight:700;
+  text-anchor:middle;dominant-baseline:central}
+.boost-arc-track{fill:none;stroke:rgba(255,255,255,.08);stroke-width:5;stroke-linecap:round}
+.boost-arc{fill:none;stroke:#ffc94d;stroke-width:5;stroke-linecap:round;
+  filter:drop-shadow(0 0 4px rgba(255,201,77,.6));transition:stroke .2s}
+.dash.firing .boost-arc{stroke:#ff7a45}
+.shift-lights circle{fill:rgba(255,255,255,.09);transition:fill .06s}
+.shift-lights circle.on.g{fill:#3ddc97;filter:drop-shadow(0 0 4px #3ddc97)}
+.shift-lights circle.on.a{fill:#ffc94d;filter:drop-shadow(0 0 4px #ffc94d)}
+.shift-lights circle.on.r{fill:#ff3a3f;filter:drop-shadow(0 0 5px #ff3a3f)}
+.shift-lights.flash circle{fill:#4da6ff;filter:drop-shadow(0 0 6px #4da6ff)}
+.shift-lights.off{display:none}
+.needle{fill:#ff3a3f;filter:drop-shadow(0 0 6px rgba(255,58,63,.85))}
+.hub{fill:#16181d;stroke:rgba(255,255,255,.35);stroke-width:1.5}
+/* Readouts over the face, in the dial's own proportions. */
+.dash-readout{position:absolute;left:0;top:0;width:100%;aspect-ratio:1;pointer-events:none}
+.gear-big{position:absolute;left:50%;top:38%;transform:translate(-50%,-50%);
+  font-size:clamp(26px,2.6vw,36px);font-weight:800;color:#fff;line-height:1;
+  text-shadow:0 2px 12px rgba(0,0,0,.6)}
+.speed{position:absolute;left:50%;top:66%;transform:translate(-50%,-50%);
+  font-family:var(--display);font-size:clamp(44px,4.4vw,62px);font-weight:800;
+  line-height:1;letter-spacing:-.02em;color:#fff;text-shadow:0 3px 16px rgba(0,0,0,.65)}
+.unit{position:absolute;left:50%;top:78%;transform:translateX(-50%);
+  font-size:9px;letter-spacing:.24em;color:rgba(236,240,247,.62)}
 /* The boost control is on screen on every device: nobody should have to be
    told which key it is. */
-.boost-btn{width:100%;margin-top:8px;padding:10px;border-radius:11px;cursor:pointer;
-  display:flex;align-items:center;justify-content:center;gap:8px;
-  background:rgba(255,201,77,.14);border:1px solid rgba(255,201,77,.45);
-  color:#ffc94d;font-size:12px;font-weight:800;letter-spacing:.12em;
-  pointer-events:auto;transition:.12s}
-.boost-btn:hover{background:rgba(255,201,77,.24)}
-.boost-btn.held{background:#ffc94d;color:#241a00;transform:translateY(1px)}
-.boost-btn:disabled{opacity:.42;cursor:not-allowed;background:rgba(125,139,163,.14);
-  border-color:var(--edge);color:var(--dim)}
-.boost-btn .bolt{font-size:14px}
-.boost-key{background:rgba(0,0,0,.28);border-color:transparent;font-size:9px}
-.boost{display:flex;align-items:center;gap:9px;margin-top:6px}
-.boost-label{font-size:9px;letter-spacing:.18em;color:var(--dim)}
-.boost-track{flex:1;height:7px;border-radius:99px;background:rgba(125,139,163,.22);
-  border:1px solid var(--edge);overflow:hidden}
+.dash .boost{width:76%;display:flex;align-items:center;gap:8px;margin-top:-4px}
+.boost-label{font-size:8.5px;letter-spacing:.18em;color:var(--dim);font-weight:600}
+.boost-track{flex:1;height:5px;border-radius:99px;background:rgba(255,255,255,.1);overflow:hidden}
 .boost-fill{display:block;height:100%;width:100%;border-radius:99px;
   background:linear-gradient(90deg,#4de3b0,#8ef26a);transition:background .2s}
 .boost.firing .boost-fill{background:linear-gradient(90deg,#ffc94d,#ff5f5f)}
 .boost.empty .boost-fill{background:rgba(125,139,163,.45)}
-.boost-charges{font-size:12px;font-weight:700;color:var(--accent);min-width:22px;
-  text-align:right}
+.boost-charges{font-size:12px;font-weight:700;color:var(--accent);min-width:22px;text-align:right}
 .boost.broke .boost-charges{color:var(--warn)}
+.boost-btn{width:76%;padding:9px;border-radius:12px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  background:rgba(255,201,77,.12);border:1px solid rgba(255,201,77,.42);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  color:#ffc94d;font-size:11.5px;font-weight:800;letter-spacing:.12em;
+  pointer-events:auto;transition:.12s}
+.boost-btn:hover{background:rgba(255,201,77,.22)}
+.boost-btn.held{background:#ffc94d;color:#241a00;transform:translateY(1px)}
+.boost-btn:disabled{opacity:.42;cursor:not-allowed;background:rgba(125,139,163,.12);
+  border-color:var(--glass-edge);color:var(--dim)}
+.boost-btn .bolt{font-size:13px}
+.boost-key{background:rgba(0,0,0,.28);border-color:transparent;font-size:9px}
+
+@media (prefers-reduced-motion:reduce){
+  .rev-fill,.needle,.boost-arc{filter:none}
+}
 
 /* A feed for things other drivers did: short, stacked, self-clearing. */
 .notes{position:absolute;left:18px;bottom:18px;display:flex;flex-direction:column;
@@ -382,6 +440,30 @@ input[type="range"]::-moz-range-track{background:transparent}
   backdrop-filter:blur(20px);box-shadow:0 30px 80px rgba(0,0,0,.6)}
 h2{margin:0 0 14px;font-size:26px;letter-spacing:-.01em}
 .field{margin-bottom:12px}
+/* ---------- garage setup ---------- */
+.tune{margin:4px 0 14px;display:flex;flex-direction:column;gap:9px}
+.tune-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.tune-head label{margin:0}
+.seg{display:flex;border:1px solid var(--edge);border-radius:9px;overflow:hidden}
+.seg button{background:transparent;border:0;color:var(--dim);padding:5px 10px;cursor:pointer;
+  font-family:var(--font);font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
+.seg button[aria-pressed="true"]{background:var(--ink);color:#0a0f18}
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chips button{border:1px solid var(--edge);background:rgba(9,14,24,.5);color:var(--dim);
+  border-radius:99px;padding:4px 10px;cursor:pointer;font-family:var(--font);font-size:10px;
+  font-weight:700;letter-spacing:.08em}
+.chips button[aria-pressed="true"]{color:#0a0f18;background:#ffc94d;border-color:transparent}
+.tune-controls{display:flex;flex-direction:column;gap:8px}
+.tune-group{font-family:var(--font);font-size:9px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--dim);margin-top:4px;border-top:1px solid var(--edge);padding-top:7px}
+.tune-row{display:grid;grid-template-columns:1fr auto;gap:2px 8px;align-items:center}
+.tune-row span{font-size:11.5px}
+.tune-row b{font-family:var(--mono,ui-monospace,monospace);font-size:11px;font-weight:600;color:var(--ink)}
+.tune-row input{grid-column:1 / -1;width:100%}
+.tune-ends{grid-column:1 / -1;display:flex;justify-content:space-between;font-size:9.5px;color:var(--dim);
+  letter-spacing:.06em;margin-top:-2px}
+.tune-reset{align-self:flex-start;border:0;background:none;color:var(--dim);cursor:pointer;
+  font-size:11px;text-decoration:underline;padding:0}
 label{display:block;font-family:var(--font);font-size:9px;letter-spacing:.2em;
   text-transform:uppercase;color:var(--dim);margin-bottom:6px}
 .opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(60px,1fr));gap:6px}
@@ -583,18 +665,15 @@ kbd{background:rgba(255,255,255,.08);border:1px solid var(--edge);border-radius:
   color:var(--dim);font-size:13px;letter-spacing:.2em;text-transform:uppercase}
 [hidden]{display:none!important}
 @media (max-width:640px){
-  .gauge{width:184px;padding:8px 10px 7px}.speed{font-size:32px}.gear-badge{font-size:16px;padding:1px 7px}
-  #minimap{width:112px;height:112px}
-  .panel{min-width:118px;padding:8px 11px}.v{font-size:13px}
-  .hud-corner{gap:7px}.tl{top:12px;left:12px}.tl-low{top:150px;left:12px}
-  .gaps{min-width:132px}.tr{top:12px;right:12px}.br{bottom:12px;right:12px}
   .notes{left:12px;bottom:12px;font-size:11px}
   #toast{font-size:24px}
+}
 }
 
 
 /* ---------- tyres and the pit wall ---------- */
-.tyres{min-width:198px;display:flex;flex-direction:column;gap:7px}
+.tyres{width:214px;display:flex;flex-direction:column;gap:8px}
+.tyre-body{display:flex;justify-content:center;padding:2px 0}
 .tyre-head{display:flex;align-items:center;gap:8px}
 .tyre-head .k{flex:1}
 .tyre-badge{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;
@@ -605,6 +684,35 @@ kbd{background:rgba(255,255,255,.08);border:1px solid var(--edge);border-radius:
 .tyre-fill{display:block;height:100%;width:100%;border-radius:99px;background:#ffc94d;
   transition:width .2s linear,background .3s}
 .tyres.shot{border-color:rgba(255,95,95,.55)}
+/* Tread temperature at each corner of the car, laid out where the tyres are,
+   with each axle's discs inside the outline of the car. Colour says where it
+   sits against the window; the number says by how much, so nothing depends
+   on telling the colours apart. */
+.thermal{position:relative;display:grid;grid-template-columns:auto 46px auto;
+  grid-template-areas:"fl bf fr" "rl br rr";gap:5px 6px;align-items:center;
+  font-family:var(--font);font-size:11px;line-height:1}
+.thermal::before{content:'';grid-area:1 / 2 / 3 / 3;align-self:stretch;
+  border:1.5px solid rgba(255,255,255,.18);border-radius:16px 16px 12px 12px;
+  background:linear-gradient(180deg,rgba(255,255,255,.05),transparent)}
+.thermal i[data-w="0"]{grid-area:fl}
+.thermal i[data-w="1"]{grid-area:fr}
+.thermal i[data-w="2"]{grid-area:rl}
+.thermal i[data-w="3"]{grid-area:rr}
+.thermal b[data-b="0"]{grid-area:bf}
+.thermal b[data-b="1"]{grid-area:br}
+.thermal i,.thermal b{position:relative;font-style:normal;font-weight:700;padding:5px 6px;
+  border-radius:7px;text-align:center;min-width:36px;background:rgba(125,139,163,.16);color:var(--dim)}
+.thermal b{min-width:0;padding:3px 2px;font-size:9.5px;background:transparent;justify-self:center}
+.thermal .cold{color:#0a0f18;background:#6fb4ff}
+.thermal .ok{color:#06130d;background:#3ddc97}
+.thermal .hot{color:#1c1300;background:#ffc94d}
+.thermal .over{color:#fff;background:#ff3a3f}
+.thermal b.fade{color:#fff;background:#ff3a3f;border-radius:6px}
+.thermal b.warm{color:#ffc94d}
+/* A bike has one tyre per axle. */
+.tyres.two-wheel .thermal{grid-template-columns:auto 46px;grid-template-areas:"fl bf" "rl br"}
+.tyres.two-wheel .thermal i[data-w="1"],
+.tyres.two-wheel .thermal i[data-w="3"]{display:none}
 .pit-row{display:flex;align-items:center;gap:8px;justify-content:space-between}
 .pit-state{font-size:9.5px;letter-spacing:.14em;font-weight:700;color:var(--dim)}
 .pit-state.hot{color:#ffc94d}
@@ -634,34 +742,47 @@ kbd{background:rgba(255,255,255,.08);border:1px solid var(--edge);border-radius:
    so the dial gives up the corner entirely: speed, gear, boost and tyres
    become one strip across the top, and the camera and menu buttons move to
    the free edge on the left. */
-body.touch-ui #hud{padding:calc(8px + env(safe-area-inset-top,0px)) 10px 0}
-body.touch-ui .br{position:absolute;top:calc(8px + env(safe-area-inset-top,0px));
-  bottom:auto;left:50%;right:auto;transform:translateX(-50%);
-  flex-direction:row;align-items:flex-start;gap:8px}
-body.touch-ui #gauge-svg,
+body.touch-ui #hud{--pad-t:calc(8px + env(safe-area-inset-top,0px));--pad-x:10px;--gap:8px;
+  --pad-b:calc(8px + env(safe-area-inset-bottom,0px))}
+/* Speed, gear, boost and tyres become one strip across the top: the pedals
+   own the bottom right and the steering pad owns the bottom left. */
+body.touch-ui .hud-stack.bottom{position:fixed;top:var(--pad-t);left:50%;right:auto;bottom:auto;
+  flex-direction:row;align-items:stretch;gap:8px;
+  transform:translateX(-50%) scale(var(--hud-scale));transform-origin:top center}
+body.touch-ui .dash{width:auto;flex-direction:row;align-items:center;gap:10px;padding:6px 12px;
+  background:var(--glass);border:1px solid var(--glass-edge);border-radius:14px;
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+body.touch-ui .dash::before,
+body.touch-ui .dial,
 body.touch-ui .boost-btn,
 body.touch-ui .boost-label{display:none}
-body.touch-ui .gauge{width:auto;padding:6px 10px;display:flex;align-items:center;gap:10px}
-body.touch-ui .readout{margin-top:0;gap:5px}
-body.touch-ui .speed{font-size:26px}
-body.touch-ui .unit{font-size:7.5px;letter-spacing:.14em}
-body.touch-ui .gear-badge{font-size:14px;padding:1px 6px;margin-left:2px}
-body.touch-ui .boost{margin-top:0;width:96px}
-body.touch-ui .tyres{min-width:0;padding:6px 9px;gap:5px}
+body.touch-ui .dash-readout{position:static;width:auto;aspect-ratio:auto;display:flex;
+  align-items:baseline;gap:6px}
+body.touch-ui .gear-big,body.touch-ui .speed,body.touch-ui .unit{position:static;transform:none}
+body.touch-ui .speed{font-size:28px;order:1}
+body.touch-ui .unit{font-size:7.5px;letter-spacing:.14em;order:2}
+body.touch-ui .gear-big{font-size:16px;order:3;padding:1px 7px;border-radius:8px;
+  background:rgba(255,255,255,.08);border:1px solid var(--glass-edge)}
+body.touch-ui .dash .boost{width:92px;margin:0}
+body.touch-ui .tyres{min-width:0;padding:6px 9px;gap:5px;width:auto}
 body.touch-ui .tyre-head .k{display:none}
+body.touch-ui .thermal b{display:none}
+body.touch-ui .thermal{grid-template-columns:repeat(2,auto);grid-template-areas:"fl fr" "rl rr"}
 body.touch-ui .tyre-track{width:78px}
 body.touch-ui .pit-state{display:none}
-body.touch-ui .tl-low{display:none}
-body.touch-ui .env .row:nth-child(2),
-body.touch-ui .env .row:nth-child(3){display:none}
-body.touch-ui #minimap{width:92px;height:92px}
-body.touch-ui .tr{top:calc(8px + env(safe-area-inset-top,0px));right:10px}
-body.touch-ui .tl{top:calc(8px + env(safe-area-inset-top,0px));left:10px}
-body.touch-ui .panel{min-width:0;padding:6px 9px}
-body.touch-ui .times .v{font-size:12px}
+body.touch-ui .hud-col.left{width:156px}
+body.touch-ui .gaps{display:none}
+body.touch-ui .pos-big b{font-size:32px}
+body.touch-ui .race{padding:7px 10px 9px;gap:10px}
+body.touch-ui .race-lap b{font-size:15px}
+body.touch-ui .time-now #time{font-size:17px}
+body.touch-ui .card{padding:7px 10px}
+body.touch-ui #minimap{width:96px;height:96px}
+body.touch-ui .env{width:150px}
+body.touch-ui .env .row:nth-child(2){display:none}
 /* The feed cannot sit in the bottom-left: that is where the thumb is. */
 body.touch-ui .notes{left:50%;transform:translateX(-50%);bottom:auto;
-  top:calc(96px + env(safe-area-inset-top,0px));max-width:min(320px,58vw)}
+  top:calc(80px + env(safe-area-inset-top,0px));max-width:min(320px,58vw)}
 body.touch-ui .touch-top{right:auto;left:10px;top:50%;transform:translateY(-50%);
   flex-direction:column;width:52px;gap:6px}
 body.touch-ui #toast{top:38%}
@@ -675,16 +796,16 @@ body.touch-ui #toast{top:38%}
   body.touch-ui .pedal.gas{padding:20px 8px}
   body.touch-ui .speed{font-size:22px}
   body.touch-ui #minimap{width:76px;height:76px}
+  body.touch-ui .env{display:none}
 }
 
 /* Portrait, or any narrow screen: the strip fills the top edge on its own and
-   the rest of the HUD starts below it instead of underneath it. */
+   the columns start below it instead of underneath it. */
 @media (max-width:560px){
-  body.touch-ui .br{left:10px;right:10px;transform:none;justify-content:center;
-    flex-wrap:wrap;gap:6px}
-  body.touch-ui .tl,
-  body.touch-ui .tr{top:calc(80px + env(safe-area-inset-top,0px))}
-  body.touch-ui .notes{top:calc(168px + env(safe-area-inset-top,0px));max-width:min(320px,76vw)}
+  body.touch-ui .hud-stack.bottom{left:10px;right:10px;transform:scale(var(--hud-scale));
+    transform-origin:top center;justify-content:center;flex-wrap:wrap;gap:6px}
+  body.touch-ui .hud-col{top:calc(78px + env(safe-area-inset-top,0px))}
+  body.touch-ui .notes{top:calc(170px + env(safe-area-inset-top,0px));max-width:min(320px,76vw)}
   body.touch-ui .touch-top{top:auto;bottom:calc(150px + env(safe-area-inset-bottom,0px));
     transform:none}
 }

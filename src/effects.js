@@ -63,7 +63,9 @@ export class Effects {
   } = {}) {
     const p = this.#take();
     p.sprite.position.copy(position);
-    p.sprite.material.color.copy(color ?? this.tint);
+    // Spray and smoke are lit by the scene, not glowing: at night they are
+    // only as bright as the light that falls on them.
+    p.sprite.material.color.copy(color ?? this.tint).multiplyScalar(this.lightLevel ?? 1);
     p.sprite.material.opacity = Math.min(0.75, 0.2 + strength * 0.5);
     p.sprite.scale.setScalar(size * (0.6 + strength * 0.6));
     p.sprite.visible = true;
@@ -84,15 +86,17 @@ export class Effects {
   // is off the sealed surface altogether.
   tyreSmoke(car, dt, wet = 0) {
     const slide = car.slide ?? 0;
-    const sliding = slide > 1.6 && car.kmh > 14;
+    // Hot rubber smokes sooner and thicker than rubber in its window.
+    const heat = car.tyres?.overheat ?? 0;
+    const sliding = slide > 1.6 - heat * 0.5 && car.kmh > 14;
     const offRoad = !car.onRoad && car.kmh > 22;
     const spraying = wet > 0.2 && car.kmh > 30;
     if (!sliding && !offRoad && !spraying) return;
 
-    const slip = sliding ? Math.min(1, (slide - 1.6) / 9) : 0;
+    const slip = sliding ? Math.min(1, Math.max(0.05, (slide - 1.6) / 9)) : 0;
     // A wet road puts water in the air instead of rubber, so hard sliding on
     // one makes less smoke, not more.
-    const smoke = slip * (1 - wet * 0.7);
+    const smoke = Math.min(1, slip * (1 - wet * 0.7) * (1 + heat * 1.2));
     const spray = spraying ? Math.min(1, (car.kmh - 30) / 150) * wet : 0;
     const dust = offRoad ? Math.min(1, (car.kmh - 22) / 90) : 0;
     const rate = smoke * 40 + spray * 26 + dust * 30 + (sliding ? 8 : 0);

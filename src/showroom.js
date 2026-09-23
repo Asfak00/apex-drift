@@ -45,6 +45,9 @@ export class Showroom {
     ring.rotation.x = Math.PI / 2;
     ring.position.y = -0.01;
     this.group.add(plinth, ring);
+    // The turntable is sized to what stands on it: a bike on a small one, a
+    // bus on one it fits.
+    this.table = [plinth, ring];
 
     // Key light from high and ahead, fill from the other side and lower, and a
     // rim behind the car to pick its shoulder line out of the dark.
@@ -110,6 +113,10 @@ export class Showroom {
   show(car) {
     const at = car.renderPosition;
     this.group.position.set(at.x, at.y - 0.02, at.z);
+    const fit = Math.max(0.55, (car.chassis?.body.length ?? 4.7) / 8.4);
+    // The ring is a torus stood on its side, so its own y is the world's z.
+    this.table[0].scale.set(fit, 1, fit);
+    this.table[1].scale.set(fit, fit, 1);
     for (const light of [this.key, this.fill, this.rim]) {
       light.target.position.set(0, 0.7, 0);
     }
